@@ -696,6 +696,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     }
   }
   renderRow(parent, task, today) {
+    var _a;
     const row = parent.createDiv({ cls: "smart-todo-row" });
     if (task.status === "done")
       row.addClass("is-done");
@@ -739,16 +740,19 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         text: `rests until ${this.humanDate(task.defer, today)}`
       });
     }
-    if (task.effort) {
-      const pill = meta.createSpan({
-        cls: `smart-todo-effort is-${task.effort}`,
-        text: task.effort.charAt(0).toUpperCase() + task.effort.slice(1)
-      });
-      pill.addEventListener("contextmenu", (evt) => {
-        evt.preventDefault();
-        this.showEffortMenu(evt, task);
-      });
-    }
+    const effortLabel = task.effort ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1) : "Effort";
+    const pill = meta.createSpan({
+      cls: `smart-todo-effort is-${(_a = task.effort) != null ? _a : "unset"}`,
+      text: effortLabel,
+      attr: { "aria-label": "Set effort" }
+    });
+    const openMenu = (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.showEffortMenu(evt, task);
+    };
+    pill.addEventListener("click", openMenu);
+    pill.addEventListener("contextmenu", openMenu);
     if (task.pushes > 0) {
       meta.createSpan({
         cls: "smart-todo-pushes",

@@ -238,17 +238,24 @@ export class SmartTodoView extends ItemView {
       });
     }
 
-    if (task.effort) {
-      const pill = meta.createSpan({
-        cls: `smart-todo-effort is-${task.effort}`,
-        text: task.effort.charAt(0).toUpperCase() + task.effort.slice(1),
-      });
-      // Right-click to retag effort — the field you most often get wrong first.
-      pill.addEventListener("contextmenu", (evt) => {
-        evt.preventDefault();
-        this.showEffortMenu(evt, task);
-      });
-    }
+    // Always render an effort pill — even when unset — so effort can be set
+    // from scratch, not only retagged. An unset task has no pill to right-click,
+    // which left you with no way in. Left-click (or right-click) opens the menu.
+    const effortLabel = task.effort
+      ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1)
+      : "Effort";
+    const pill = meta.createSpan({
+      cls: `smart-todo-effort is-${task.effort ?? "unset"}`,
+      text: effortLabel,
+      attr: { "aria-label": "Set effort" },
+    });
+    const openMenu = (evt: MouseEvent): void => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.showEffortMenu(evt, task);
+    };
+    pill.addEventListener("click", openMenu);
+    pill.addEventListener("contextmenu", openMenu);
 
     if (task.pushes > 0) {
       meta.createSpan({

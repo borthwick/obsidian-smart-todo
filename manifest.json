@@ -1,7 +1,7 @@
 {
   "id": "smart-todo",
   "name": "Smart ToDo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.7.2",
   "description": "Effort-aware task triage. Reads Tasks-plugin markdown checkboxes from an opt-in set of managed files and surfaces a Today view with defer, effort and push tracking.",
   "author": "BotWick",

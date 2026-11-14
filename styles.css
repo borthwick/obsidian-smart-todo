@@ -170,7 +170,19 @@
   font-size: var(--font-ui-smaller);
   line-height: 1.5;
   white-space: nowrap;
-  cursor: context-menu;
+  cursor: pointer;
+}
+
+/* unset = faint dashed placeholder, inviting a click to set effort */
+.smart-todo-effort.is-unset {
+  color: var(--text-faint);
+  border: 1px dashed var(--background-modifier-border);
+  background: transparent;
+  opacity: 0.8;
+}
+.smart-todo-effort.is-unset:hover {
+  color: var(--text-muted);
+  opacity: 1;
 }
 
 /* light = neutral, deliberately quiet */
