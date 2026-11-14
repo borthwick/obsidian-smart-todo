@@ -473,6 +473,171 @@ async function safeWrite(fn) {
   }
 }
 
+// src/nlparse.ts
+var WEEKDAYS = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday"
+];
+var WEEKDAY_ALIASES = {
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  tues: 2,
+  wed: 3,
+  weds: 3,
+  thu: 4,
+  thur: 4,
+  thurs: 4,
+  fri: 5,
+  sat: 6
+};
+var MONTHS = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december"
+];
+function nextWeekday(from, target, forceNext) {
+  let delta = (target - from.getDay() + 7) % 7;
+  if (delta === 0 && forceNext)
+    delta = 7;
+  return addDays(from, delta);
+}
+function parseNaturalDate(input) {
+  const raw = input.trim();
+  const today = startOfToday();
+  const patterns = [
+    // today / tonight
+    {
+      re: /\b(today|tonight)\b/i,
+      resolve: () => today
+    },
+    // tomorrow / tmrw
+    {
+      re: /\b(tomorrow|tmrw|tmr)\b/i,
+      resolve: () => addDays(today, 1)
+    },
+    // yesterday (rare for a todo, but keep the title clean if used)
+    {
+      re: /\byesterday\b/i,
+      resolve: () => addDays(today, -1)
+    },
+    // in N days / weeks
+    {
+      re: /\bin\s+(\d{1,3})\s+(day|days|week|weeks)\b/i,
+      resolve: (m) => {
+        const n = Number(m[1]);
+        const unit = m[2].toLowerCase();
+        return addDays(today, unit.startsWith("week") ? n * 7 : n);
+      }
+    },
+    // next week
+    {
+      re: /\bnext\s+week\b/i,
+      resolve: () => addDays(today, 7)
+    },
+    // next <weekday> / this <weekday> / on <weekday> / bare <weekday>
+    {
+      re: /\b(next|this|on|by)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)\b/i,
+      resolve: (m) => {
+        var _a;
+        const qualifier = (m[1] || "").toLowerCase();
+        const word = m[2].toLowerCase();
+        let idx = WEEKDAYS.indexOf(word);
+        if (idx === -1)
+          idx = (_a = WEEKDAY_ALIASES[word]) != null ? _a : -1;
+        if (idx === -1)
+          return null;
+        return nextWeekday(today, idx, qualifier === "next");
+      }
+    },
+    // on <month> <day> / <month> <day>
+    {
+      re: /\b(?:on|by|due)?\s*(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b/i,
+      resolve: (m) => {
+        const mon = m[1].toLowerCase();
+        let mi = MONTHS.indexOf(mon);
+        if (mi === -1)
+          mi = MONTHS.findIndex((x) => x.startsWith(mon));
+        if (mi === -1)
+          return null;
+        const day = Number(m[2]);
+        let year = today.getFullYear();
+        let candidate = new Date(year, mi, day);
+        if (candidate.getTime() < today.getTime()) {
+          candidate = new Date(year + 1, mi, day);
+        }
+        if (candidate.getMonth() !== mi || candidate.getDate() !== day)
+          return null;
+        return candidate;
+      }
+    },
+    // ISO date embedded in prose
+    {
+      re: /\b(\d{4}-\d{2}-\d{2})\b/,
+      resolve: (m) => parseDate(m[1])
+    }
+  ];
+  for (const { re, resolve } of patterns) {
+    const m = raw.match(re);
+    if (!m)
+      continue;
+    const due = resolve(m);
+    if (!due)
+      continue;
+    const title = stripPhrase(raw, m[0]);
+    return { title, due, matched: m[0].trim() };
+  }
+  return { title: raw, due: null, matched: null };
+}
+function stripPhrase(text, phrase) {
+  let out = text.replace(phrase, " ");
+  out = out.replace(/\s+(on|by|due|at)\s*$/i, "");
+  out = out.replace(/\s{2,}/g, " ").trim();
+  return out.length > 0 ? out : text.trim();
+}
+function parseCapture(app, input) {
+  var _a, _b, _c, _d;
+  const nld = (_b = (_a = app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["nldates-obsidian"];
+  if (nld && typeof nld.parseDate === "function") {
+    try {
+      const built = parseNaturalDate(input);
+      if (built.due && built.matched) {
+        const parsed = nld.parseDate(built.matched);
+        if ((_d = (_c = parsed == null ? void 0 : parsed.moment) == null ? void 0 : _c.isValid) == null ? void 0 : _d.call(_c)) {
+          const d = parsed.moment.toDate();
+          return {
+            title: built.title,
+            due: new Date(d.getFullYear(), d.getMonth(), d.getDate()),
+            matched: built.matched
+          };
+        }
+      }
+    } catch (e) {
+    }
+  }
+  return parseNaturalDate(input);
+}
+function buildCaptureBody(app, input) {
+  const { title, due } = parseCapture(app, input);
+  if (!due)
+    return input.trim();
+  return `${title} \u{1F4C5} ${formatDate(due)}`;
+}
+
 // src/view.ts
 var import_obsidian4 = require("obsidian");
 
@@ -923,12 +1088,18 @@ var SmartTodoPlugin = class extends import_obsidian5.Plugin {
       console.error("[smart-todo] could not create managed file", path, e);
     }
   }
-  /** Capture a task title into the managed file. */
+  /**
+   * Capture a task from natural language into the managed file. "Buy the milk
+   * tomorrow" becomes "Buy the milk 📅 <tomorrow>" — the date phrase is parsed
+   * out and the title left clean. Plain titles with no date phrase pass through
+   * unchanged.
+   */
   async addTask(title) {
     const trimmed = title.trim();
     if (!trimmed)
       return false;
-    const ok = await safeWrite(() => appendTask(this.app, this.primaryFile, trimmed));
+    const body = buildCaptureBody(this.app, trimmed);
+    const ok = await safeWrite(() => appendTask(this.app, this.primaryFile, body));
     if (ok)
       this.refreshViews();
     return ok;

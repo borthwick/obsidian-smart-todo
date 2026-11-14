@@ -18,6 +18,7 @@ import {
   VIEW_TYPE_SMART_TODO,
 } from "./types";
 import { appendTask, ensureManagedFile, safeWrite } from "./writer";
+import { buildCaptureBody } from "./nlparse";
 import { SmartTodoView } from "./view";
 
 /** Coalesce bursty vault events (Sync landing a batch) into one rescan. */
@@ -130,11 +131,17 @@ export default class SmartTodoPlugin extends Plugin {
     }
   }
 
-  /** Capture a task title into the managed file. */
+  /**
+   * Capture a task from natural language into the managed file. "Buy the milk
+   * tomorrow" becomes "Buy the milk 📅 <tomorrow>" — the date phrase is parsed
+   * out and the title left clean. Plain titles with no date phrase pass through
+   * unchanged.
+   */
   async addTask(title: string): Promise<boolean> {
     const trimmed = title.trim();
     if (!trimmed) return false;
-    const ok = await safeWrite(() => appendTask(this.app, this.primaryFile, trimmed));
+    const body = buildCaptureBody(this.app, trimmed);
+    const ok = await safeWrite(() => appendTask(this.app, this.primaryFile, body));
     if (ok) this.refreshViews();
     return ok;
   }
