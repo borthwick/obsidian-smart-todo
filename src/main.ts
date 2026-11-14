@@ -1,0 +1,169 @@
+// Smart ToDo — plugin entry point.
+//
+// Phase 1.5 scope: an *opt-in* set of managed files (default `Tasks.md`), a
+// Today view with defer/effort/push triage, task capture into the managed
+// file, and safe single-line write-back. No index persistence — the scan is
+// cheap because scope is narrow by construction.
+
+import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { scanScope } from "./parser";
+import { isInScope, parseScope, primaryManagedFile } from "./scope";
+import { SmartTodoSettingTab } from "./settings";
+import { AddTaskModal } from "./add-task-modal";
+import {
+  DEFAULT_SETTINGS,
+  ManagedScope,
+  SmartTask,
+  SmartTodoSettings,
+  VIEW_TYPE_SMART_TODO,
+} from "./types";
+import { appendTask, ensureManagedFile, safeWrite } from "./writer";
+import { SmartTodoView } from "./view";
+
+/** Coalesce bursty vault events (Sync landing a batch) into one rescan. */
+const REFRESH_DEBOUNCE_MS = 1200;
+
+export default class SmartTodoPlugin extends Plugin {
+  settings: SmartTodoSettings = DEFAULT_SETTINGS;
+
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async onload(): Promise<void> {
+    await this.loadSettings();
+
+    this.registerView(
+      VIEW_TYPE_SMART_TODO,
+      (leaf: WorkspaceLeaf) => new SmartTodoView(leaf, this)
+    );
+
+    this.addSettingTab(new SmartTodoSettingTab(this.app, this));
+
+    this.addRibbonIcon("list-checks", "Smart ToDo: Today", () => {
+      void this.activateView();
+    });
+
+    // Obsidian prefixes command names with the plugin name, so this shows in
+    // the palette as "Smart ToDo: Open Today view".
+    this.addCommand({
+      id: "open-today-view",
+      name: "Open Today view",
+      callback: () => void this.activateView(),
+    });
+
+    this.addCommand({
+      id: "add-task",
+      name: "Add task",
+      callback: () => {
+        new AddTaskModal(this.app, (title) => void this.addTask(title)).open();
+      },
+    });
+
+    this.addCommand({
+      id: "refresh-tasks",
+      name: "Rescan tasks",
+      callback: () => this.refreshViews(),
+    });
+
+    // Create the managed file after the vault has finished indexing —
+    // getAbstractFileByPath is unreliable mid-load and we'd create a duplicate.
+    this.app.workspace.onLayoutReady(() => {
+      void this.ensurePrimaryFile();
+    });
+
+    // Repaint when a managed file changes underneath us. Out-of-scope edits
+    // are ignored outright, so typing in an unmanaged note costs nothing.
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file instanceof TFile && this.isInManagedScope(file.path)) {
+          this.scheduleRefresh();
+        }
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (this.isInManagedScope(file.path)) this.scheduleRefresh();
+      })
+    );
+    // A rename can move a file in or out of scope, so don't filter on it.
+    this.registerEvent(this.app.vault.on("rename", () => this.scheduleRefresh()));
+  }
+
+  onunload(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+  }
+
+  async loadSettings(): Promise<void> {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+
+  /** The managed scope as currently configured. */
+  get scope(): ManagedScope {
+    return parseScope(this.settings.managedFiles);
+  }
+
+  isInManagedScope(path: string): boolean {
+    return isInScope(path, this.scope);
+  }
+
+  /** The file new tasks are appended to. */
+  get primaryFile(): string {
+    return primaryManagedFile(this.scope);
+  }
+
+  async scan(): Promise<SmartTask[]> {
+    return scanScope(this.app, this.scope);
+  }
+
+  /** Create the managed file if it's missing, so capture always has a target. */
+  async ensurePrimaryFile(): Promise<void> {
+    const path = this.primaryFile;
+    if (this.app.vault.getAbstractFileByPath(path)) return;
+    try {
+      await ensureManagedFile(this.app, path);
+      new Notice(`Smart ToDo: created ${path}`, 4000);
+    } catch (e) {
+      console.error("[smart-todo] could not create managed file", path, e);
+    }
+  }
+
+  /** Capture a task title into the managed file. */
+  async addTask(title: string): Promise<boolean> {
+    const trimmed = title.trim();
+    if (!trimmed) return false;
+    const ok = await safeWrite(() => appendTask(this.app, this.primaryFile, trimmed));
+    if (ok) this.refreshViews();
+    return ok;
+  }
+
+  private scheduleRefresh(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      this.refreshViews();
+    }, REFRESH_DEBOUNCE_MS);
+  }
+
+  refreshViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SMART_TODO)) {
+      const view = leaf.view;
+      if (view instanceof SmartTodoView) void view.refresh();
+    }
+  }
+
+  async activateView(): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_SMART_TODO);
+    if (existing.length > 0) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: VIEW_TYPE_SMART_TODO, active: true });
+    this.app.workspace.revealLeaf(leaf);
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+build-reference/
+*.bak
+.DS_Store
+
+# Local test fixtures live in /tmp, not here.
+tmp/
+
+# NOTE: main.js is deliberately NOT ignored — BRAT and manual installs read the
+# built bundle from the repo/release, so it has to be committed.

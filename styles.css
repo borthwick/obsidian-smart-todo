@@ -1,0 +1,326 @@
+/* Smart ToDo — restrained, Obsidian-native. All color comes from theme vars
+   so it tracks light/dark and custom themes instead of fighting them. */
+
+.smart-todo-root {
+  padding: 0 var(--size-4-2) var(--size-4-4);
+  font-size: var(--font-ui-small);
+}
+
+/* ---------- header / tabs ---------- */
+
+.smart-todo-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: var(--size-4-2) 0;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.smart-todo-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-1);
+  flex: 1;
+  min-width: 0;
+}
+
+.smart-todo-tab {
+  padding: 2px var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.smart-todo-tab:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.smart-todo-tab.is-active {
+  color: var(--text-normal);
+  background: var(--background-modifier-active-hover);
+  font-weight: var(--font-semibold);
+}
+
+.smart-todo-refresh {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.smart-todo-refresh:hover {
+  color: var(--text-normal);
+}
+
+.smart-todo-refresh .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---------- summary ---------- */
+
+.smart-todo-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-2-1);
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.smart-todo-count {
+  color: var(--text-muted);
+}
+
+.smart-todo-resting {
+  font-style: italic;
+}
+
+/* ---------- rows ---------- */
+
+.smart-todo-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.smart-todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-2-1);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.smart-todo-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.smart-todo-checkbox {
+  margin: 1px 0 0;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.smart-todo-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.smart-todo-title {
+  color: var(--text-normal);
+  line-height: var(--line-height-tight);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.smart-todo-title:hover {
+  color: var(--text-accent);
+}
+
+.smart-todo-row.is-done .smart-todo-title {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.smart-todo-row.is-resting {
+  opacity: 0.7;
+}
+
+.smart-todo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2-2);
+  margin-top: 3px;
+  font-size: var(--font-ui-smaller);
+}
+
+.smart-todo-date {
+  color: var(--text-faint);
+}
+
+.smart-todo-date.is-defer {
+  font-style: italic;
+}
+
+.smart-todo-row.is-overdue .smart-todo-date {
+  color: var(--text-error);
+}
+
+/* ---------- effort pills ---------- */
+
+.smart-todo-effort {
+  padding: 0 6px;
+  border-radius: var(--radius-s);
+  border: 1px solid transparent;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: context-menu;
+}
+
+/* light = neutral, deliberately quiet */
+.smart-todo-effort.is-light {
+  color: var(--text-muted);
+  background: var(--background-modifier-border);
+}
+
+/* moderate = green outline */
+.smart-todo-effort.is-moderate {
+  color: var(--color-green);
+  border-color: var(--color-green);
+  background: transparent;
+}
+
+/* heavy = orange, the only loud thing in the list */
+.smart-todo-effort.is-heavy {
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+  background: hsla(var(--color-orange-hsl), 0.1);
+  font-weight: var(--font-semibold);
+}
+
+/* ---------- pushes badge ---------- */
+
+.smart-todo-pushes {
+  padding: 0 5px;
+  border-radius: var(--radius-s);
+  color: var(--color-red);
+  background: hsla(var(--color-red-hsl), 0.12);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- project / assignee ---------- */
+
+.smart-todo-project {
+  color: var(--text-accent);
+}
+
+.smart-todo-project::before {
+  content: "#";
+  opacity: 0.6;
+}
+
+.smart-todo-assigned {
+  color: var(--text-muted);
+}
+
+/* ---------- push button ---------- */
+
+.smart-todo-push {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms ease-in-out;
+}
+
+.smart-todo-row:hover .smart-todo-push {
+  opacity: 1;
+}
+
+.smart-todo-push:hover {
+  color: var(--text-accent);
+}
+
+.smart-todo-push .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Touch devices get no hover — keep the control reachable. */
+@media (hover: none) {
+  .smart-todo-push {
+    opacity: 1;
+  }
+}
+
+/* ---------- empty state ---------- */
+
+.smart-todo-empty {
+  padding: var(--size-4-4) var(--size-2-1);
+  color: var(--text-faint);
+  font-style: italic;
+  text-align: center;
+}
+
+.smart-todo-empty-scope {
+  margin-top: var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  font-style: normal;
+  color: var(--text-faint);
+  word-break: break-word;
+}
+
+/* ---------- capture row ---------- */
+
+.smart-todo-add {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: var(--size-2-3) 0 var(--size-2-2);
+}
+
+.smart-todo-add-input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-ui-small);
+}
+
+.smart-todo-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--size-2-1) var(--size-2-2);
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.smart-todo-add-btn:hover {
+  color: var(--text-normal);
+}
+
+.smart-todo-add-btn .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- settings ---------- */
+
+.smart-todo-scope-input {
+  width: 100%;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  resize: vertical;
+}
+
+.smart-todo-scope-summary {
+  margin: var(--size-2-2) 0 var(--size-4-3);
+  padding-left: var(--size-4-2);
+  border-left: 2px solid var(--background-modifier-border);
+}
