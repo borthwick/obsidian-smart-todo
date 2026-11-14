@@ -33,15 +33,26 @@ var EFFORT_WEIGHT = {
 };
 var DEFAULT_MANAGED_FILE = "Tasks.md";
 var DEFAULT_SETTINGS = {
-  managedFiles: DEFAULT_MANAGED_FILE
+  managedFiles: DEFAULT_MANAGED_FILE,
+  pushesWarnThreshold: 3,
+  defaultLayout: "card"
 };
 var TABS = [
   { id: "today", label: "Today" },
+  { id: "tomorrow", label: "Tomorrow" },
   { id: "week", label: "This Week" },
   { id: "overdue", label: "Overdue" },
   { id: "backlog", label: "Backlog" },
-  { id: "completed", label: "Completed" }
+  { id: "completed", label: "Completed" },
+  { id: "assigned", label: "Assigned" }
 ];
+function projectColor(project) {
+  let hash = 0;
+  for (let i = 0; i < project.length; i++) {
+    hash = (hash * 31 + project.charCodeAt(i)) % 360;
+  }
+  return `hsl(${hash}, 60%, 55%)`;
+}
 var VIEW_TYPE_SMART_TODO = "smart-todo-view";
 
 // src/scope.ts
@@ -265,6 +276,26 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         renderSummary();
       })
     );
+    el.createEl("h3", { text: "Display" });
+    new import_obsidian.Setting(el).setName("Default layout").setDesc("Card rows, or an Onda-style sortable table.").addDropdown(
+      (dd) => dd.addOption("card", "Cards").addOption("table", "Table").setValue(this.plugin.settings.defaultLayout).onChange(async (value) => {
+        this.plugin.settings.defaultLayout = value;
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      })
+    );
+    new import_obsidian.Setting(el).setName("Pushes warning threshold").setDesc(
+      "The pushes badge turns amber at or above this count \u2014 your procrastination signal. Set higher to only flag chronic avoiders."
+    ).addText(
+      (text) => text.setValue(String(this.plugin.settings.pushesWarnThreshold)).onChange(async (value) => {
+        const n = Number(value);
+        if (Number.isFinite(n) && n >= 1) {
+          this.plugin.settings.pushesWarnThreshold = Math.floor(n);
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        }
+      })
+    );
   }
 };
 
@@ -414,6 +445,13 @@ function buildEffortLine(task, effort) {
 async function setTaskEffort(app, task, effort) {
   await replaceTaskLine(app, task, buildEffortLine(task, effort));
 }
+function buildProjectLine(task, project) {
+  const trimmed = project == null ? void 0 : project.trim();
+  return !trimmed ? removeInlineField(task.rawText, "project") : setInlineField(task.rawText, "project", trimmed);
+}
+async function setTaskProject(app, task, project) {
+  await replaceTaskLine(app, task, buildProjectLine(task, project));
+}
 var MANAGED_FILE_STUB = "# Tasks\n\n";
 function buildAppendedContent(content, title) {
   const line = `- [ ] ${title.trim()}`;
@@ -516,8 +554,7 @@ function nextWeekday(from, target, forceNext) {
     delta = 7;
   return addDays(from, delta);
 }
-function parseNaturalDate(input) {
-  const raw = input.trim();
+function findDatePhrase(text) {
   const today = startOfToday();
   const patterns = [
     // today / tonight
@@ -549,9 +586,9 @@ function parseNaturalDate(input) {
       re: /\bnext\s+week\b/i,
       resolve: () => addDays(today, 7)
     },
-    // next <weekday> / this <weekday> / on <weekday> / bare <weekday>
+    // next/this/on/by/starting/available/from <weekday> / bare <weekday>
     {
-      re: /\b(next|this|on|by)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)\b/i,
+      re: /\b(next|this|on|by|starting|available|from)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)\b/i,
       resolve: (m) => {
         var _a;
         const qualifier = (m[1] || "").toLowerCase();
@@ -592,50 +629,114 @@ function parseNaturalDate(input) {
     }
   ];
   for (const { re, resolve } of patterns) {
-    const m = raw.match(re);
+    const m = text.match(re);
     if (!m)
       continue;
-    const due = resolve(m);
-    if (!due)
+    const date = resolve(m);
+    if (!date)
       continue;
-    const title = stripPhrase(raw, m[0]);
-    return { title, due, matched: m[0].trim() };
+    return { date, phrase: m[0] };
   }
-  return { title: raw, due: null, matched: null };
+  return null;
 }
 function stripPhrase(text, phrase) {
   let out = text.replace(phrase, " ");
-  out = out.replace(/\s+(on|by|due|at)\s*$/i, "");
+  out = out.replace(/\s+(on|by|due|at|for|starting|available|from)\s*$/i, "");
   out = out.replace(/\s{2,}/g, " ").trim();
-  return out.length > 0 ? out : text.trim();
+  return out;
+}
+var EFFORT_RE = /\b(heavy|hard|big|moderate|medium|light|easy|quick|small)\b/i;
+var EFFORT_MAP = {
+  heavy: "heavy",
+  hard: "heavy",
+  big: "heavy",
+  moderate: "moderate",
+  medium: "moderate",
+  light: "light",
+  easy: "light",
+  quick: "light",
+  small: "light"
+};
+function parseNaturalTask(input) {
+  var _a;
+  let working = input.trim();
+  let effort = null;
+  let project = null;
+  let assigned = null;
+  let defer = null;
+  const projTag = working.match(/#([A-Za-z0-9][\w-]*)/);
+  const projKey = working.match(/\bproject[:\s]+([A-Za-z0-9][\w -]*?)(?=\s*(?:,|;|$|#|@|\bfor\b|\bdue\b|\bby\b))/i);
+  if (projTag) {
+    project = projTag[1];
+    working = stripPhrase(working, projTag[0]);
+  } else if (projKey) {
+    project = projKey[1].trim();
+    working = stripPhrase(working, projKey[0]);
+  }
+  const asgTag = working.match(/@([A-Za-z0-9][\w-]*)/);
+  const asgFor = working.match(/\bfor\s+([A-Z][a-z]+)\b/);
+  if (asgTag) {
+    assigned = asgTag[1];
+    working = stripPhrase(working, asgTag[0]);
+  } else if (asgFor) {
+    assigned = asgFor[1];
+    working = stripPhrase(working, asgFor[0]);
+  }
+  const eff = working.match(EFFORT_RE);
+  if (eff) {
+    effort = (_a = EFFORT_MAP[eff[1].toLowerCase()]) != null ? _a : null;
+    if (effort)
+      working = stripPhrase(working, eff[0]);
+  }
+  const deferLead = working.match(/\b(starting|available|from|defer(?:red)?(?:\s+to)?)\s+(.+)$/i);
+  if (deferLead) {
+    const hit = findDatePhrase(deferLead[2]);
+    if (hit) {
+      defer = hit.date;
+      working = stripPhrase(working, `${deferLead[1]} ${hit.phrase}`);
+    }
+  }
+  const dueHit = findDatePhrase(working);
+  let due = null;
+  let matched = null;
+  if (dueHit) {
+    due = dueHit.date;
+    matched = dueHit.phrase.trim();
+    working = stripPhrase(working, dueHit.phrase);
+  }
+  const title = working.length > 0 ? working : input.trim();
+  return { title, due, defer, effort, project, assigned, matched };
 }
 function parseCapture(app, input) {
   var _a, _b, _c, _d;
+  const built = parseNaturalTask(input);
   const nld = (_b = (_a = app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["nldates-obsidian"];
-  if (nld && typeof nld.parseDate === "function") {
+  if (built.due && built.matched && nld && typeof nld.parseDate === "function") {
     try {
-      const built = parseNaturalDate(input);
-      if (built.due && built.matched) {
-        const parsed = nld.parseDate(built.matched);
-        if ((_d = (_c = parsed == null ? void 0 : parsed.moment) == null ? void 0 : _c.isValid) == null ? void 0 : _d.call(_c)) {
-          const d = parsed.moment.toDate();
-          return {
-            title: built.title,
-            due: new Date(d.getFullYear(), d.getMonth(), d.getDate()),
-            matched: built.matched
-          };
-        }
+      const parsed = nld.parseDate(built.matched);
+      if ((_d = (_c = parsed == null ? void 0 : parsed.moment) == null ? void 0 : _c.isValid) == null ? void 0 : _d.call(_c)) {
+        const d = parsed.moment.toDate();
+        built.due = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       }
     } catch (e) {
     }
   }
-  return parseNaturalDate(input);
+  return built;
 }
 function buildCaptureBody(app, input) {
-  const { title, due } = parseCapture(app, input);
-  if (!due)
-    return input.trim();
-  return `${title} \u{1F4C5} ${formatDate(due)}`;
+  const { title, due, defer, effort, project, assigned } = parseCapture(app, input);
+  let body = title;
+  if (due)
+    body += ` \u{1F4C5} ${formatDate(due)}`;
+  if (defer)
+    body += ` \u23F3 ${formatDate(defer)}`;
+  if (effort)
+    body += ` [effort:: ${effort}]`;
+  if (project)
+    body += ` [project:: ${project}]`;
+  if (assigned)
+    body += ` [assigned:: ${assigned}]`;
+  return body.trim() || input.trim();
 }
 
 // src/view.ts
@@ -687,11 +788,20 @@ function bucketFor(tasks, tab, today = startOfToday()) {
   const open = tasks.filter((t) => t.status === "open");
   const weekEnd = addDays(today, 6);
   let selected;
+  const tomorrow = addDays(today, 1);
   switch (tab) {
     case "today":
       selected = open.filter(
         (t) => !isResting(t, today) && !!t.due && t.due.getTime() <= today.getTime()
       );
+      break;
+    case "tomorrow":
+      selected = open.filter(
+        (t) => !isResting(t, tomorrow) && !!t.due && isSameDay(t.due, tomorrow)
+      );
+      break;
+    case "assigned":
+      selected = tasks.filter((t) => !!t.assigned);
       break;
     case "week":
       selected = open.filter(
@@ -726,6 +836,8 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     this.activeTab = "today";
     this.tasks = [];
     this.loading = false;
+    this.layout = "card";
+    this.sort = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -738,12 +850,25 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     return "list-checks";
   }
   async onOpen() {
+    this.layout = this.plugin.settings.defaultLayout;
     const root = this.containerEl.children[1];
     root.empty();
     root.addClass("smart-todo-root");
     const header = root.createDiv({ cls: "smart-todo-header" });
     this.tabBarEl = header.createDiv({ cls: "smart-todo-tabs" });
-    const refreshBtn = header.createEl("button", {
+    const actions = header.createDiv({ cls: "smart-todo-header-actions" });
+    const layoutBtn = actions.createEl("button", {
+      cls: "smart-todo-layout-toggle",
+      attr: { "aria-label": "Toggle card / table layout" }
+    });
+    const paintLayoutBtn = () => (0, import_obsidian4.setIcon)(layoutBtn, this.layout === "table" ? "list" : "table");
+    paintLayoutBtn();
+    layoutBtn.addEventListener("click", () => {
+      this.layout = this.layout === "table" ? "card" : "table";
+      paintLayoutBtn();
+      this.render();
+    });
+    const refreshBtn = actions.createEl("button", {
       cls: "smart-todo-refresh",
       attr: { "aria-label": "Rescan vault" }
     });
@@ -856,9 +981,49 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       }
       return;
     }
-    for (const task of tasks) {
-      this.renderRow(this.listEl, task, today);
+    const ordered = this.applySort(tasks, today);
+    if (this.layout === "table") {
+      this.renderTable(this.listEl, ordered, today);
+    } else {
+      for (const task of ordered) {
+        this.renderRow(this.listEl, task, today);
+      }
     }
+  }
+  /**
+   * In table layout the user drives the sort via column headers. In card layout
+   * (or table with no explicit sort chosen) we keep the smart triage order the
+   * bucket already produced.
+   */
+  applySort(tasks, today) {
+    if (this.layout !== "table" || !this.sort)
+      return tasks;
+    const { key, dir } = this.sort;
+    const mul = dir === "asc" ? 1 : -1;
+    const val = (t) => {
+      var _a;
+      switch (key) {
+        case "due":
+          return t.due ? t.due.getTime() : Number.POSITIVE_INFINITY;
+        case "pushes":
+          return t.pushes;
+        case "effort":
+          return t.effort ? EFFORT_WEIGHT[t.effort] : 0;
+        case "project":
+          return ((_a = t.project) != null ? _a : "").toLowerCase();
+        default:
+          return t.title.toLowerCase();
+      }
+    };
+    return [...tasks].sort((a, b) => {
+      const av = val(a);
+      const bv = val(b);
+      if (av < bv)
+        return -1 * mul;
+      if (av > bv)
+        return 1 * mul;
+      return 0;
+    });
   }
   renderRow(parent, task, today) {
     var _a;
@@ -919,17 +1084,16 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     pill.addEventListener("click", openMenu);
     pill.addEventListener("contextmenu", openMenu);
     if (task.pushes > 0) {
+      const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
       meta.createSpan({
-        cls: "smart-todo-pushes",
+        cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
         text: `\u21BB ${task.pushes}`,
         attr: {
           "aria-label": `Pushed ${task.pushes} ${task.pushes === 1 ? "time" : "times"}`
         }
       });
     }
-    if (task.project) {
-      meta.createSpan({ cls: "smart-todo-project", text: task.project });
-    }
+    this.renderProject(meta, task);
     if (task.assigned) {
       meta.createSpan({ cls: "smart-todo-assigned", text: `@${task.assigned}` });
     }
@@ -972,6 +1136,129 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     );
     menu.showAtMouseEvent(evt);
   }
+  /**
+   * Project chip: a colored dot + name, or a faint "+ Project" affordance when
+   * unset. Click either to set/change — a project needs to be settable from the
+   * panel, not just from markdown.
+   */
+  renderProject(parent, task) {
+    const chip = parent.createSpan({ cls: "smart-todo-project" });
+    if (task.project) {
+      chip.createSpan({
+        cls: "smart-todo-project-dot",
+        attr: { style: `background:${projectColor(task.project)}` }
+      });
+      chip.createSpan({ cls: "smart-todo-project-name", text: task.project });
+    } else {
+      chip.addClass("is-unset");
+      chip.setText("+ Project");
+    }
+    chip.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.promptProject(task);
+    });
+  }
+  promptProject(task) {
+    var _a;
+    const known = Array.from(
+      new Set(this.tasks.map((t) => t.project).filter((p) => !!p))
+    ).sort();
+    new ProjectPromptModal(this.app, (_a = task.project) != null ? _a : "", known, async (value) => {
+      await safeWrite(
+        () => setTaskProject(this.app, task, value.trim() || null)
+      );
+      await this.refresh();
+    }).open();
+  }
+  /** Onda-style table: sortable headers + one row per task. */
+  renderTable(parent, tasks, today) {
+    var _a, _b;
+    const table = parent.createEl("table", { cls: "smart-todo-table" });
+    const thead = table.createEl("thead");
+    const headRow = thead.createEl("tr");
+    const cols = [
+      { key: "title", label: "Task" },
+      { key: "due", label: "Due" },
+      { key: "pushes", label: "Pushes" },
+      { key: "effort", label: "Effort" },
+      { key: "project", label: "Project" }
+    ];
+    for (const col of cols) {
+      const th = headRow.createEl("th", { cls: "smart-todo-th", text: col.label });
+      if (((_a = this.sort) == null ? void 0 : _a.key) === col.key) {
+        th.addClass("is-sorted");
+        th.createSpan({
+          cls: "smart-todo-sort-caret",
+          text: this.sort.dir === "asc" ? " \u25B2" : " \u25BC"
+        });
+      }
+      th.addEventListener("click", () => {
+        var _a2;
+        if (((_a2 = this.sort) == null ? void 0 : _a2.key) === col.key) {
+          this.sort = {
+            key: col.key,
+            dir: this.sort.dir === "asc" ? "desc" : "asc"
+          };
+        } else {
+          this.sort = { key: col.key, dir: "asc" };
+        }
+        this.render();
+      });
+    }
+    const tbody = table.createEl("tbody");
+    for (const task of tasks) {
+      const tr = tbody.createEl("tr", { cls: "smart-todo-trow" });
+      if (task.status === "done")
+        tr.addClass("is-done");
+      if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
+        tr.addClass("is-overdue");
+      }
+      const titleTd = tr.createEl("td", { cls: "smart-todo-td-title" });
+      const cb = titleTd.createEl("input", {
+        attr: { type: "checkbox" },
+        cls: "smart-todo-checkbox"
+      });
+      cb.checked = task.status === "done";
+      cb.addEventListener("click", async (evt) => {
+        evt.stopPropagation();
+        cb.disabled = true;
+        await safeWrite(
+          () => toggleTaskDone(this.app, task, task.status === "open")
+        );
+        await this.refresh();
+      });
+      const titleSpan = titleTd.createSpan({
+        cls: "smart-todo-title",
+        text: task.title || "(untitled task)"
+      });
+      titleSpan.addEventListener("click", () => void this.revealTask(task));
+      const dueTd = tr.createEl("td", { cls: "smart-todo-td-due" });
+      dueTd.setText(task.due ? this.humanDate(task.due, today) : "\u2014");
+      const pushTd = tr.createEl("td", { cls: "smart-todo-td-pushes" });
+      if (task.pushes > 0) {
+        const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
+        pushTd.createSpan({
+          cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
+          text: String(task.pushes)
+        });
+      } else {
+        pushTd.setText("\u2014");
+      }
+      const effTd = tr.createEl("td", { cls: "smart-todo-td-effort" });
+      const effLabel = task.effort ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1) : "\u2014";
+      const effPill = effTd.createSpan({
+        cls: `smart-todo-effort is-${(_b = task.effort) != null ? _b : "unset"}`,
+        text: effLabel
+      });
+      effPill.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.showEffortMenu(evt, task);
+      });
+      const projTd = tr.createEl("td", { cls: "smart-todo-td-project" });
+      this.renderProject(projTd, task);
+    }
+  }
   /** Open the source note and park the cursor on the task's line. */
   async revealTask(task) {
     const leaf = this.app.workspace.getLeaf(false);
@@ -996,6 +1283,62 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       return date.toLocaleDateString(void 0, { weekday: "short" });
     }
     return formatDate(date);
+  }
+};
+var ProjectPromptModal = class extends import_obsidian4.Modal {
+  constructor(app, current, known, onSubmit) {
+    super(app);
+    this.current = current;
+    this.known = known;
+    this.onSubmit = onSubmit;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Set project" });
+    const input = contentEl.createEl("input", {
+      cls: "smart-todo-project-input",
+      attr: { type: "text", placeholder: "Project name (blank to clear)" }
+    });
+    input.value = this.current;
+    input.focus();
+    input.select();
+    const submit = () => {
+      this.onSubmit(input.value);
+      this.close();
+    };
+    input.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        submit();
+      } else if (evt.key === "Escape") {
+        this.close();
+      }
+    });
+    if (this.known.length > 0) {
+      const chips = contentEl.createDiv({ cls: "smart-todo-project-chips" });
+      for (const name of this.known) {
+        const chip = chips.createEl("button", {
+          cls: "smart-todo-project-chip",
+          text: name
+        });
+        chip.createSpan({
+          cls: "smart-todo-project-dot",
+          attr: { style: `background:${projectColor(name)}` }
+        });
+        chip.addEventListener("click", () => {
+          input.value = name;
+          submit();
+        });
+      }
+    }
+    const actions = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
+    const ok = actions.createEl("button", { cls: "mod-cta", text: "Set" });
+    ok.addEventListener("click", submit);
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.close());
+  }
+  onClose() {
+    this.contentEl.empty();
   }
 };
 

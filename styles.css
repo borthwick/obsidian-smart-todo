@@ -211,22 +211,45 @@
 .smart-todo-pushes {
   padding: 0 5px;
   border-radius: var(--radius-s);
-  color: var(--color-red);
-  background: hsla(var(--color-red-hsl), 0.12);
+  color: var(--text-muted);
+  background: var(--background-modifier-border);
   font-size: var(--font-ui-smaller);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
+/* amber chip once a task has been pushed past the threshold — the Onda signal */
+.smart-todo-pushes.is-warn {
+  color: var(--color-orange);
+  background: hsla(var(--color-orange-hsl), 0.15);
+  font-weight: var(--font-semibold);
+}
+
 /* ---------- project / assignee ---------- */
 
 .smart-todo-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--text-accent);
+  cursor: pointer;
 }
 
-.smart-todo-project::before {
-  content: "#";
-  opacity: 0.6;
+.smart-todo-project.is-unset {
+  color: var(--text-faint);
+  opacity: 0.8;
+}
+.smart-todo-project.is-unset:hover {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+.smart-todo-project-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
 }
 
 .smart-todo-assigned {
@@ -335,4 +358,117 @@
   margin: var(--size-2-2) 0 var(--size-4-3);
   padding-left: var(--size-4-2);
   border-left: 2px solid var(--background-modifier-border);
+}
+
+/* ---------- header actions ---------- */
+
+.smart-todo-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  flex: 0 0 auto;
+}
+
+.smart-todo-layout-toggle {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+.smart-todo-layout-toggle:hover {
+  color: var(--text-normal);
+}
+.smart-todo-layout-toggle .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---------- table layout ---------- */
+
+.smart-todo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-small);
+}
+
+.smart-todo-th {
+  text-align: left;
+  padding: var(--size-2-2) var(--size-2-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  border-bottom: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.smart-todo-th:hover {
+  color: var(--text-normal);
+}
+.smart-todo-th.is-sorted {
+  color: var(--text-accent);
+}
+.smart-todo-sort-caret {
+  font-size: 0.7em;
+}
+
+.smart-todo-trow {
+  border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+.smart-todo-trow:hover {
+  background: var(--background-modifier-hover);
+}
+.smart-todo-trow.is-done .smart-todo-title {
+  text-decoration: line-through;
+  color: var(--text-faint);
+}
+.smart-todo-trow.is-overdue .smart-todo-td-due {
+  color: var(--color-red);
+}
+
+.smart-todo-table td {
+  padding: var(--size-2-2) var(--size-2-2);
+  vertical-align: middle;
+}
+.smart-todo-td-title {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+}
+.smart-todo-td-title .smart-todo-title {
+  cursor: pointer;
+}
+.smart-todo-td-due {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ---------- project picker modal ---------- */
+
+.smart-todo-project-input {
+  width: 100%;
+  margin-bottom: var(--size-4-2);
+}
+.smart-todo-project-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+  margin-bottom: var(--size-4-3);
+}
+.smart-todo-project-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px var(--size-2-3);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+.smart-todo-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--size-2-2);
 }

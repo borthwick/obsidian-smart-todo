@@ -5,7 +5,7 @@
 
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { parseScope, primaryManagedFile } from "./scope";
-import { DEFAULT_MANAGED_FILE } from "./types";
+import { DEFAULT_MANAGED_FILE, Layout } from "./types";
 import type SmartTodoPlugin from "./main";
 
 export class SmartTodoSettingTab extends PluginSettingTab {
@@ -97,6 +97,42 @@ export class SmartTodoSettingTab extends PluginSettingTab {
           await this.plugin.ensurePrimaryFile();
           renderSummary();
         })
+      );
+
+    el.createEl("h3", { text: "Display" });
+
+    new Setting(el)
+      .setName("Default layout")
+      .setDesc("Card rows, or an Onda-style sortable table.")
+      .addDropdown((dd) =>
+        dd
+          .addOption("card", "Cards")
+          .addOption("table", "Table")
+          .setValue(this.plugin.settings.defaultLayout)
+          .onChange(async (value) => {
+            this.plugin.settings.defaultLayout = value as Layout;
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          })
+      );
+
+    new Setting(el)
+      .setName("Pushes warning threshold")
+      .setDesc(
+        "The pushes badge turns amber at or above this count — your " +
+          "procrastination signal. Set higher to only flag chronic avoiders."
+      )
+      .addText((text) =>
+        text
+          .setValue(String(this.plugin.settings.pushesWarnThreshold))
+          .onChange(async (value) => {
+            const n = Number(value);
+            if (Number.isFinite(n) && n >= 1) {
+              this.plugin.settings.pushesWarnThreshold = Math.floor(n);
+              await this.plugin.saveSettings();
+              this.plugin.refreshViews();
+            }
+          })
       );
   }
 }

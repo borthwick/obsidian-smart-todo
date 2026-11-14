@@ -67,16 +67,31 @@ export interface SmartTodoSettings {
    * An entry ending in `.md` is a file; anything else is a folder (recursive).
    */
   managedFiles: string;
+  /** Pushes count at or above which the badge turns amber (the Onda signal). */
+  pushesWarnThreshold: number;
+  /** "card" (stacked rows) or "table" (Onda-style sortable columns). */
+  defaultLayout: Layout;
 }
+
+export type Layout = "card" | "table";
 
 /** Where tasks live, and what gets auto-created, out of the box. */
 export const DEFAULT_MANAGED_FILE = "Tasks.md";
 
 export const DEFAULT_SETTINGS: SmartTodoSettings = {
   managedFiles: DEFAULT_MANAGED_FILE,
+  pushesWarnThreshold: 3,
+  defaultLayout: "card",
 };
 
-export type TabId = "today" | "week" | "overdue" | "backlog" | "completed";
+export type TabId =
+  | "today"
+  | "tomorrow"
+  | "week"
+  | "overdue"
+  | "backlog"
+  | "completed"
+  | "assigned";
 
 export interface TabDef {
   id: TabId;
@@ -85,10 +100,31 @@ export interface TabDef {
 
 export const TABS: TabDef[] = [
   { id: "today", label: "Today" },
+  { id: "tomorrow", label: "Tomorrow" },
   { id: "week", label: "This Week" },
   { id: "overdue", label: "Overdue" },
   { id: "backlog", label: "Backlog" },
   { id: "completed", label: "Completed" },
+  { id: "assigned", label: "Assigned" },
 ];
+
+/** Sortable table columns, matching the Onda reference header row. */
+export type SortKey = "title" | "due" | "pushes" | "effort" | "project";
+export interface SortState {
+  key: SortKey;
+  dir: "asc" | "desc";
+}
+
+/**
+ * Deterministic color for a project dot — same project always gets the same
+ * hue, no config needed. Hash the name into the 0–360 wheel.
+ */
+export function projectColor(project: string): string {
+  let hash = 0;
+  for (let i = 0; i < project.length; i++) {
+    hash = (hash * 31 + project.charCodeAt(i)) % 360;
+  }
+  return `hsl(${hash}, 60%, 55%)`;
+}
 
 export const VIEW_TYPE_SMART_TODO = "smart-todo-view";

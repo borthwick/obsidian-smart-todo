@@ -178,6 +178,21 @@ export async function setTaskEffort(
   await replaceTaskLine(app, task, buildEffortLine(task, effort));
 }
 
+export function buildProjectLine(task: SmartTask, project: string | null): string {
+  const trimmed = project?.trim();
+  return !trimmed
+    ? removeInlineField(task.rawText, "project")
+    : setInlineField(task.rawText, "project", trimmed);
+}
+
+export async function setTaskProject(
+  app: App,
+  task: SmartTask,
+  project: string | null
+): Promise<void> {
+  await replaceTaskLine(app, task, buildProjectLine(task, project));
+}
+
 // --- Task capture --------------------------------------------------------
 
 /** Default body for an auto-created managed file. */

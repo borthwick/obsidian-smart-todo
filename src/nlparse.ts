@@ -10,13 +10,22 @@
 
 import type { App } from "obsidian";
 import { addDays, formatDate, parseDate, startOfToday } from "./parser";
+import { Effort } from "./types";
 
 export interface NlResult {
-  /** Title with the matched date phrase removed. */
+  /** Title with every matched phrase removed. */
   title: string;
   /** Resolved due date, or null if no phrase matched. */
   due: Date | null;
-  /** The raw phrase that produced the date, for feedback. */
+  /** Resolved defer/available date, or null. */
+  defer: Date | null;
+  /** Parsed effort, or null. */
+  effort: Effort | null;
+  /** Parsed project, or null. */
+  project: string | null;
+  /** Parsed assignee, or null. */
+  assigned: string | null;
+  /** The raw due phrase that produced the date, for feedback. */
   matched: string | null;
 }
 
@@ -66,17 +75,21 @@ function nextWeekday(from: Date, target: number, forceNext: boolean): Date {
   return addDays(from, delta);
 }
 
+interface DateHit {
+  date: Date;
+  phrase: string;
+}
+
 /**
- * Pull a date out of free text. Phrases are matched case-insensitively and are
- * typically trailing ("... tomorrow"), but leading connectors ("on", "by",
- * "due") are tolerated. Returns the date and the title with the phrase removed.
+ * Find the first date phrase in `text` and resolve it. Phrases are matched
+ * case-insensitively, typically trailing ("... tomorrow"), with leading
+ * connectors ("on", "by", "due", "starting", "available") tolerated. Returns
+ * the resolved date plus the exact matched substring so the caller can strip it.
  */
-export function parseNaturalDate(input: string): NlResult {
-  const raw = input.trim();
+function findDatePhrase(text: string): DateHit | null {
   const today = startOfToday();
 
   // Ordered so more specific patterns win before looser weekday matches.
-  // Each returns [date, matchedText].
   const patterns: Array<{ re: RegExp; resolve: (m: RegExpMatchArray) => Date | null }> = [
     // today / tonight
     {
@@ -107,9 +120,9 @@ export function parseNaturalDate(input: string): NlResult {
       re: /\bnext\s+week\b/i,
       resolve: () => addDays(today, 7),
     },
-    // next <weekday> / this <weekday> / on <weekday> / bare <weekday>
+    // next/this/on/by/starting/available/from <weekday> / bare <weekday>
     {
-      re: /\b(next|this|on|by)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)\b/i,
+      re: /\b(next|this|on|by|starting|available|from)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)\b/i,
       resolve: (m) => {
         const qualifier = (m[1] || "").toLowerCase();
         const word = m[2].toLowerCase();
@@ -146,25 +159,109 @@ export function parseNaturalDate(input: string): NlResult {
   ];
 
   for (const { re, resolve } of patterns) {
-    const m = raw.match(re);
+    const m = text.match(re);
     if (!m) continue;
-    const due = resolve(m);
-    if (!due) continue;
-    const title = stripPhrase(raw, m[0]);
-    return { title, due, matched: m[0].trim() };
+    const date = resolve(m);
+    if (!date) continue;
+    return { date, phrase: m[0] };
   }
-
-  return { title: raw, due: null, matched: null };
+  return null;
 }
 
-/** Remove the matched phrase and tidy leftover connectors/whitespace. */
+/** Remove a matched phrase and tidy leftover connectors/whitespace. */
 function stripPhrase(text: string, phrase: string): string {
   let out = text.replace(phrase, " ");
   // Drop dangling connective words left behind ("... due", "... by").
-  out = out.replace(/\s+(on|by|due|at)\s*$/i, "");
+  out = out.replace(/\s+(on|by|due|at|for|starting|available|from)\s*$/i, "");
   out = out.replace(/\s{2,}/g, " ").trim();
-  // Never return an empty title — fall back to the original sentence.
-  return out.length > 0 ? out : text.trim();
+  return out;
+}
+
+const EFFORT_RE = /\b(heavy|hard|big|moderate|medium|light|easy|quick|small)\b/i;
+const EFFORT_MAP: Record<string, Effort> = {
+  heavy: "heavy",
+  hard: "heavy",
+  big: "heavy",
+  moderate: "moderate",
+  medium: "moderate",
+  light: "light",
+  easy: "light",
+  quick: "light",
+  small: "light",
+};
+
+/**
+ * Full capture parse: pull effort, project, assignee, defer, and due out of one
+ * sentence, stripping each matched phrase so the title is left clean.
+ *
+ * Order matters — tagged fields (#project, @assignee, project: X) are removed
+ * first so their words can't be mistaken for date/effort tokens, then defer
+ * ("starting monday"), then due.
+ */
+export function parseNaturalTask(input: string): NlResult {
+  let working = input.trim();
+  let effort: Effort | null = null;
+  let project: string | null = null;
+  let assigned: string | null = null;
+  let defer: Date | null = null;
+
+  // --- project: #Onda  or  project: Onda / project Onda ---
+  const projTag = working.match(/#([A-Za-z0-9][\w-]*)/);
+  const projKey = working.match(/\bproject[:\s]+([A-Za-z0-9][\w -]*?)(?=\s*(?:,|;|$|#|@|\bfor\b|\bdue\b|\bby\b))/i);
+  if (projTag) {
+    project = projTag[1];
+    working = stripPhrase(working, projTag[0]);
+  } else if (projKey) {
+    project = projKey[1].trim();
+    working = stripPhrase(working, projKey[0]);
+  }
+
+  // --- assignee: @selena  or  "for Selena" (capitalized → a name, not a noun) ---
+  const asgTag = working.match(/@([A-Za-z0-9][\w-]*)/);
+  const asgFor = working.match(/\bfor\s+([A-Z][a-z]+)\b/);
+  if (asgTag) {
+    assigned = asgTag[1];
+    working = stripPhrase(working, asgTag[0]);
+  } else if (asgFor) {
+    assigned = asgFor[1];
+    working = stripPhrase(working, asgFor[0]);
+  }
+
+  // --- effort word ---
+  const eff = working.match(EFFORT_RE);
+  if (eff) {
+    effort = EFFORT_MAP[eff[1].toLowerCase()] ?? null;
+    if (effort) working = stripPhrase(working, eff[0]);
+  }
+
+  // --- defer: an explicit "starting/available/from <date>" phrase ---
+  const deferLead = working.match(/\b(starting|available|from|defer(?:red)?(?:\s+to)?)\s+(.+)$/i);
+  if (deferLead) {
+    const hit = findDatePhrase(deferLead[2]);
+    if (hit) {
+      defer = hit.date;
+      // Strip the connector + the date phrase together.
+      working = stripPhrase(working, `${deferLead[1]} ${hit.phrase}`);
+    }
+  }
+
+  // --- due: the remaining date phrase ---
+  const dueHit = findDatePhrase(working);
+  let due: Date | null = null;
+  let matched: string | null = null;
+  if (dueHit) {
+    due = dueHit.date;
+    matched = dueHit.phrase.trim();
+    working = stripPhrase(working, dueHit.phrase);
+  }
+
+  const title = working.length > 0 ? working : input.trim();
+  return { title, due, defer, effort, project, assigned, matched };
+}
+
+/** Backwards-compatible date-only parse (used by the capture body builder). */
+export function parseNaturalDate(input: string): NlResult {
+  return parseNaturalTask(input);
 }
 
 /**
@@ -173,33 +270,38 @@ function stripPhrase(text: string, phrase: string): string {
  * `parseDate(text) -> { moment, formattedString }` on its instance.
  */
 export function parseCapture(app: App, input: string): NlResult {
+  const built = parseNaturalTask(input);
+
+  // Let nldates refine the *due* date only (it parses phrasing our fallback may
+  // miss), without disturbing the other fields we already stripped.
   const nld = (app as any).plugins?.plugins?.["nldates-obsidian"];
-  if (nld && typeof nld.parseDate === "function") {
+  if (built.due && built.matched && nld && typeof nld.parseDate === "function") {
     try {
-      const built = parseNaturalDate(input);
-      // Only trust nldates if our own matcher also found a phrase to strip;
-      // otherwise we'd set a date but leave the phrase in the title.
-      if (built.due && built.matched) {
-        const parsed = nld.parseDate(built.matched);
-        if (parsed?.moment?.isValid?.()) {
-          const d = parsed.moment.toDate();
-          return {
-            title: built.title,
-            due: new Date(d.getFullYear(), d.getMonth(), d.getDate()),
-            matched: built.matched,
-          };
-        }
+      const parsed = nld.parseDate(built.matched);
+      if (parsed?.moment?.isValid?.()) {
+        const d = parsed.moment.toDate();
+        built.due = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       }
     } catch (e) {
-      // Fall through to the built-in parser on any nldates hiccup.
+      // Keep the fallback date on any nldates hiccup.
     }
   }
-  return parseNaturalDate(input);
+  return built;
 }
 
-/** Compose the task body: clean title + `📅 YYYY-MM-DD` when a date resolved. */
+/**
+ * Compose the task body from a capture string: clean title plus the inline
+ * encoding for whatever fields were parsed — `📅 due`, `⏳ defer`,
+ * `[effort:: x]`, `[project:: x]`, `[assigned:: x]`. Order matches the design
+ * doc so Tasks/Dataview read it cleanly.
+ */
 export function buildCaptureBody(app: App, input: string): string {
-  const { title, due } = parseCapture(app, input);
-  if (!due) return input.trim();
-  return `${title} 📅 ${formatDate(due)}`;
+  const { title, due, defer, effort, project, assigned } = parseCapture(app, input);
+  let body = title;
+  if (due) body += ` 📅 ${formatDate(due)}`;
+  if (defer) body += ` ⏳ ${formatDate(defer)}`;
+  if (effort) body += ` [effort:: ${effort}]`;
+  if (project) body += ` [project:: ${project}]`;
+  if (assigned) body += ` [assigned:: ${assigned}]`;
+  return body.trim() || input.trim();
 }

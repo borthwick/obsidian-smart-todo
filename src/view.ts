@@ -1,18 +1,29 @@
 // Smart ToDo — Today view (right-leaf ItemView).
 
-import { ItemView, Menu, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, Menu, Modal, WorkspaceLeaf, setIcon } from "obsidian";
 import { bucketFor, isResting } from "./filters";
 import { addDays, formatDate, isSameDay, startOfToday } from "./parser";
 import { describeScope } from "./scope";
 import {
   EFFORTS,
+  EFFORT_WEIGHT,
   Effort,
+  Layout,
   SmartTask,
+  SortKey,
+  SortState,
   TABS,
   TabId,
   VIEW_TYPE_SMART_TODO,
+  projectColor,
 } from "./types";
-import { pushTask, safeWrite, setTaskEffort, toggleTaskDone } from "./writer";
+import {
+  pushTask,
+  safeWrite,
+  setTaskEffort,
+  setTaskProject,
+  toggleTaskDone,
+} from "./writer";
 import type SmartTodoPlugin from "./main";
 
 export class SmartTodoView extends ItemView {
@@ -20,6 +31,8 @@ export class SmartTodoView extends ItemView {
   activeTab: TabId = "today";
   tasks: SmartTask[] = [];
   loading = false;
+  layout: Layout = "card";
+  sort: SortState | null = null;
 
   private tabBarEl: HTMLElement;
   private summaryEl: HTMLElement;
@@ -44,6 +57,8 @@ export class SmartTodoView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    this.layout = this.plugin.settings.defaultLayout;
+
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
     root.addClass("smart-todo-root");
@@ -51,7 +66,22 @@ export class SmartTodoView extends ItemView {
     const header = root.createDiv({ cls: "smart-todo-header" });
     this.tabBarEl = header.createDiv({ cls: "smart-todo-tabs" });
 
-    const refreshBtn = header.createEl("button", {
+    const actions = header.createDiv({ cls: "smart-todo-header-actions" });
+
+    const layoutBtn = actions.createEl("button", {
+      cls: "smart-todo-layout-toggle",
+      attr: { "aria-label": "Toggle card / table layout" },
+    });
+    const paintLayoutBtn = (): void =>
+      setIcon(layoutBtn, this.layout === "table" ? "list" : "table");
+    paintLayoutBtn();
+    layoutBtn.addEventListener("click", () => {
+      this.layout = this.layout === "table" ? "card" : "table";
+      paintLayoutBtn();
+      this.render();
+    });
+
+    const refreshBtn = actions.createEl("button", {
       cls: "smart-todo-refresh",
       attr: { "aria-label": "Rescan vault" },
     });
@@ -185,9 +215,47 @@ export class SmartTodoView extends ItemView {
       return;
     }
 
-    for (const task of tasks) {
-      this.renderRow(this.listEl, task, today);
+    const ordered = this.applySort(tasks, today);
+
+    if (this.layout === "table") {
+      this.renderTable(this.listEl, ordered, today);
+    } else {
+      for (const task of ordered) {
+        this.renderRow(this.listEl, task, today);
+      }
     }
+  }
+
+  /**
+   * In table layout the user drives the sort via column headers. In card layout
+   * (or table with no explicit sort chosen) we keep the smart triage order the
+   * bucket already produced.
+   */
+  private applySort(tasks: SmartTask[], today: Date): SmartTask[] {
+    if (this.layout !== "table" || !this.sort) return tasks;
+    const { key, dir } = this.sort;
+    const mul = dir === "asc" ? 1 : -1;
+    const val = (t: SmartTask): number | string => {
+      switch (key) {
+        case "due":
+          return t.due ? t.due.getTime() : Number.POSITIVE_INFINITY;
+        case "pushes":
+          return t.pushes;
+        case "effort":
+          return t.effort ? EFFORT_WEIGHT[t.effort] : 0;
+        case "project":
+          return (t.project ?? "").toLowerCase();
+        default:
+          return t.title.toLowerCase();
+      }
+    };
+    return [...tasks].sort((a, b) => {
+      const av = val(a);
+      const bv = val(b);
+      if (av < bv) return -1 * mul;
+      if (av > bv) return 1 * mul;
+      return 0;
+    });
   }
 
   private renderRow(parent: HTMLElement, task: SmartTask, today: Date): void {
@@ -258,8 +326,9 @@ export class SmartTodoView extends ItemView {
     pill.addEventListener("contextmenu", openMenu);
 
     if (task.pushes > 0) {
+      const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
       meta.createSpan({
-        cls: "smart-todo-pushes",
+        cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
         text: `↻ ${task.pushes}`,
         attr: {
           "aria-label": `Pushed ${task.pushes} ${task.pushes === 1 ? "time" : "times"}`,
@@ -267,9 +336,7 @@ export class SmartTodoView extends ItemView {
       });
     }
 
-    if (task.project) {
-      meta.createSpan({ cls: "smart-todo-project", text: task.project });
-    }
+    this.renderProject(meta, task);
 
     if (task.assigned) {
       meta.createSpan({ cls: "smart-todo-assigned", text: `@${task.assigned}` });
@@ -320,6 +387,142 @@ export class SmartTodoView extends ItemView {
     menu.showAtMouseEvent(evt);
   }
 
+  /**
+   * Project chip: a colored dot + name, or a faint "+ Project" affordance when
+   * unset. Click either to set/change — a project needs to be settable from the
+   * panel, not just from markdown.
+   */
+  private renderProject(parent: HTMLElement, task: SmartTask): void {
+    const chip = parent.createSpan({ cls: "smart-todo-project" });
+    if (task.project) {
+      chip.createSpan({
+        cls: "smart-todo-project-dot",
+        attr: { style: `background:${projectColor(task.project)}` },
+      });
+      chip.createSpan({ cls: "smart-todo-project-name", text: task.project });
+    } else {
+      chip.addClass("is-unset");
+      chip.setText("+ Project");
+    }
+    chip.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.promptProject(task);
+    });
+  }
+
+  private promptProject(task: SmartTask): void {
+    const known = Array.from(
+      new Set(this.tasks.map((t) => t.project).filter((p): p is string => !!p))
+    ).sort();
+    new ProjectPromptModal(this.app, task.project ?? "", known, async (value) => {
+      await safeWrite(() =>
+        setTaskProject(this.app, task, value.trim() || null)
+      );
+      await this.refresh();
+    }).open();
+  }
+
+  /** Onda-style table: sortable headers + one row per task. */
+  private renderTable(parent: HTMLElement, tasks: SmartTask[], today: Date): void {
+    const table = parent.createEl("table", { cls: "smart-todo-table" });
+    const thead = table.createEl("thead");
+    const headRow = thead.createEl("tr");
+
+    const cols: Array<{ key: SortKey; label: string }> = [
+      { key: "title", label: "Task" },
+      { key: "due", label: "Due" },
+      { key: "pushes", label: "Pushes" },
+      { key: "effort", label: "Effort" },
+      { key: "project", label: "Project" },
+    ];
+    for (const col of cols) {
+      const th = headRow.createEl("th", { cls: "smart-todo-th", text: col.label });
+      if (this.sort?.key === col.key) {
+        th.addClass("is-sorted");
+        th.createSpan({
+          cls: "smart-todo-sort-caret",
+          text: this.sort.dir === "asc" ? " ▲" : " ▼",
+        });
+      }
+      th.addEventListener("click", () => {
+        if (this.sort?.key === col.key) {
+          this.sort = {
+            key: col.key,
+            dir: this.sort.dir === "asc" ? "desc" : "asc",
+          };
+        } else {
+          this.sort = { key: col.key, dir: "asc" };
+        }
+        this.render();
+      });
+    }
+
+    const tbody = table.createEl("tbody");
+    for (const task of tasks) {
+      const tr = tbody.createEl("tr", { cls: "smart-todo-trow" });
+      if (task.status === "done") tr.addClass("is-done");
+      if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
+        tr.addClass("is-overdue");
+      }
+
+      // Task cell: checkbox + title
+      const titleTd = tr.createEl("td", { cls: "smart-todo-td-title" });
+      const cb = titleTd.createEl("input", {
+        attr: { type: "checkbox" },
+        cls: "smart-todo-checkbox",
+      }) as HTMLInputElement;
+      cb.checked = task.status === "done";
+      cb.addEventListener("click", async (evt) => {
+        evt.stopPropagation();
+        cb.disabled = true;
+        await safeWrite(() =>
+          toggleTaskDone(this.app, task, task.status === "open")
+        );
+        await this.refresh();
+      });
+      const titleSpan = titleTd.createSpan({
+        cls: "smart-todo-title",
+        text: task.title || "(untitled task)",
+      });
+      titleSpan.addEventListener("click", () => void this.revealTask(task));
+
+      // Due
+      const dueTd = tr.createEl("td", { cls: "smart-todo-td-due" });
+      dueTd.setText(task.due ? this.humanDate(task.due, today) : "—");
+
+      // Pushes
+      const pushTd = tr.createEl("td", { cls: "smart-todo-td-pushes" });
+      if (task.pushes > 0) {
+        const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
+        pushTd.createSpan({
+          cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
+          text: String(task.pushes),
+        });
+      } else {
+        pushTd.setText("—");
+      }
+
+      // Effort
+      const effTd = tr.createEl("td", { cls: "smart-todo-td-effort" });
+      const effLabel = task.effort
+        ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1)
+        : "—";
+      const effPill = effTd.createSpan({
+        cls: `smart-todo-effort is-${task.effort ?? "unset"}`,
+        text: effLabel,
+      });
+      effPill.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.showEffortMenu(evt, task);
+      });
+
+      // Project
+      const projTd = tr.createEl("td", { cls: "smart-todo-td-project" });
+      this.renderProject(projTd, task);
+    }
+  }
+
   /** Open the source note and park the cursor on the task's line. */
   private async revealTask(task: SmartTask): Promise<void> {
     const leaf = this.app.workspace.getLeaf(false);
@@ -340,5 +543,75 @@ export class SmartTodoView extends ItemView {
       return date.toLocaleDateString(undefined, { weekday: "short" });
     }
     return formatDate(date);
+  }
+}
+
+/**
+ * Minimal project picker: a text field prefilled with the current value, plus
+ * one-click chips for projects already used elsewhere in scope so you reuse
+ * names instead of spawning near-duplicates.
+ */
+class ProjectPromptModal extends Modal {
+  constructor(
+    app: import("obsidian").App,
+    private current: string,
+    private known: string[],
+    private onSubmit: (value: string) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Set project" });
+
+    const input = contentEl.createEl("input", {
+      cls: "smart-todo-project-input",
+      attr: { type: "text", placeholder: "Project name (blank to clear)" },
+    }) as HTMLInputElement;
+    input.value = this.current;
+    input.focus();
+    input.select();
+
+    const submit = (): void => {
+      this.onSubmit(input.value);
+      this.close();
+    };
+    input.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        submit();
+      } else if (evt.key === "Escape") {
+        this.close();
+      }
+    });
+
+    if (this.known.length > 0) {
+      const chips = contentEl.createDiv({ cls: "smart-todo-project-chips" });
+      for (const name of this.known) {
+        const chip = chips.createEl("button", {
+          cls: "smart-todo-project-chip",
+          text: name,
+        });
+        chip.createSpan({
+          cls: "smart-todo-project-dot",
+          attr: { style: `background:${projectColor(name)}` },
+        });
+        chip.addEventListener("click", () => {
+          input.value = name;
+          submit();
+        });
+      }
+    }
+
+    const actions = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
+    const ok = actions.createEl("button", { cls: "mod-cta", text: "Set" });
+    ok.addEventListener("click", submit);
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }

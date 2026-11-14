@@ -83,11 +83,24 @@ export function bucketFor(
 
   let selected: SmartTask[];
 
+  const tomorrow = addDays(today, 1);
+
   switch (tab) {
     case "today":
       selected = open.filter(
         (t) => !isResting(t, today) && !!t.due && t.due.getTime() <= today.getTime()
       );
+      break;
+    case "tomorrow":
+      // Just tomorrow's actionable work — the "line up the day ahead" view.
+      selected = open.filter(
+        (t) => !isResting(t, tomorrow) && !!t.due && isSameDay(t.due, tomorrow)
+      );
+      break;
+    case "assigned":
+      // Delegated work: anything with an assignee, open or not, so you can
+      // track what you're waiting on from other people.
+      selected = tasks.filter((t) => !!t.assigned);
       break;
     case "week":
       selected = open.filter(
