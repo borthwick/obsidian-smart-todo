@@ -178,6 +178,28 @@ export async function setTaskEffort(
   await replaceTaskLine(app, task, buildEffortLine(task, effort));
 }
 
+/**
+ * Set the Eisenhower "important" judgment. `true`/`false` write an explicit
+ * `[important:: true|false]`; `null` clears the field (back to unjudged).
+ * Urgency is never written — it's always derived from the due date.
+ */
+export function buildImportantLine(
+  task: SmartTask,
+  important: boolean | null
+): string {
+  return important === null
+    ? removeInlineField(task.rawText, "important")
+    : setInlineField(task.rawText, "important", important ? "true" : "false");
+}
+
+export async function setTaskImportant(
+  app: App,
+  task: SmartTask,
+  important: boolean | null
+): Promise<void> {
+  await replaceTaskLine(app, task, buildImportantLine(task, important));
+}
+
 export function buildProjectLine(task: SmartTask, project: string | null): string {
   const trimmed = project?.trim();
   return !trimmed

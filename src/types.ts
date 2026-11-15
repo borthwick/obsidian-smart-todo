@@ -36,7 +36,55 @@ export interface SmartTask {
   pushes: number;
   project: string | null;
   assigned: string | null;
+  /**
+   * Eisenhower "important" axis. A stored judgment: does this matter to a goal,
+   * regardless of when it's due. Null = unjudged (shown distinctly from an
+   * explicit "not important"). Urgency is NOT stored — it's derived from the
+   * due date (see `isUrgent`), because "is it time-pressing" is a fact the
+   * dates already know, while "does it matter" is a call only the user makes.
+   */
+  important: boolean | null;
 }
+
+// --- Eisenhower matrix ---------------------------------------------------
+//
+// Two axes: urgent (derived from due date) × important (a stored judgment).
+// Four quadrants drive the classic advice — do / schedule / delegate / drop.
+
+export type Quadrant = "do" | "schedule" | "delegate" | "drop";
+
+export interface QuadrantDef {
+  id: Quadrant;
+  /** Urgent × Important truth values that land here. */
+  urgent: boolean;
+  important: boolean;
+  label: string;
+  /** The classic Eisenhower verb for this quadrant. */
+  advice: string;
+}
+
+/** Q1 do, Q2 schedule, Q3 delegate, Q4 drop. */
+export const QUADRANTS: QuadrantDef[] = [
+  { id: "do", urgent: true, important: true, label: "Do", advice: "Do now" },
+  { id: "schedule", urgent: false, important: true, label: "Schedule", advice: "Decide when" },
+  { id: "delegate", urgent: true, important: false, label: "Delegate", advice: "Delegate / quick-win" },
+  { id: "drop", urgent: false, important: false, label: "Drop", advice: "Drop or defer" },
+];
+
+export function quadrantFor(urgent: boolean, important: boolean): Quadrant {
+  if (urgent && important) return "do";
+  if (!urgent && important) return "schedule";
+  if (urgent && !important) return "delegate";
+  return "drop";
+}
+
+/** HSL accent per quadrant, for the colored pill in the row. */
+export const QUADRANT_COLOR: Record<Quadrant, string> = {
+  do: "hsl(4, 72%, 54%)", // red — fire
+  schedule: "hsl(210, 68%, 54%)", // blue — plan
+  delegate: "hsl(38, 82%, 52%)", // amber — hand off
+  drop: "hsl(220, 9%, 55%)", // grey — let go
+};
 
 // --- Managed scope -------------------------------------------------------
 //
@@ -108,8 +156,43 @@ export const TABS: TabDef[] = [
   { id: "assigned", label: "Assigned" },
 ];
 
+// --- Eisenhower filter buttons -------------------------------------------
+//
+// A second filter axis layered on top of the tabs. The tabs answer "when"
+// (today / week / backlog); these buttons answer "what kind" (which quadrant).
+// They compose: "This Week" + "Urgent & Important" = this week's fires.
+//
+// John wants breadth first — ship many buttons, prune later — so every useful
+// slice of the matrix gets its own button, not just the four raw quadrants.
+
+export type QuadFilterId =
+  | "all"
+  | "do" // urgent + important
+  | "schedule" // important, not urgent
+  | "delegate" // urgent, not important
+  | "drop" // neither
+  | "urgent" // urgent, either importance
+  | "important" // important, either urgency
+  | "unjudged"; // importance not yet set — the review queue
+
+export interface QuadFilterDef {
+  id: QuadFilterId;
+  label: string;
+}
+
+export const QUAD_FILTERS: QuadFilterDef[] = [
+  { id: "all", label: "All" },
+  { id: "do", label: "Urgent & Important" },
+  { id: "schedule", label: "Important · Not urgent" },
+  { id: "delegate", label: "Urgent · Not important" },
+  { id: "drop", label: "Neither" },
+  { id: "urgent", label: "Just Urgent" },
+  { id: "important", label: "Just Important" },
+  { id: "unjudged", label: "Needs review" },
+];
+
 /** Sortable table columns, matching the Onda reference header row. */
-export type SortKey = "title" | "due" | "pushes" | "effort" | "project";
+export type SortKey = "title" | "due" | "pushes" | "effort" | "project" | "quadrant";
 export interface SortState {
   key: SortKey;
   dir: "asc" | "desc";

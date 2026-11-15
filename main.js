@@ -31,6 +31,31 @@ var EFFORT_WEIGHT = {
   moderate: 2,
   light: 1
 };
+var QUADRANTS = [
+  { id: "do", urgent: true, important: true, label: "Do", advice: "Do now" },
+  { id: "schedule", urgent: false, important: true, label: "Schedule", advice: "Decide when" },
+  { id: "delegate", urgent: true, important: false, label: "Delegate", advice: "Delegate / quick-win" },
+  { id: "drop", urgent: false, important: false, label: "Drop", advice: "Drop or defer" }
+];
+function quadrantFor(urgent, important) {
+  if (urgent && important)
+    return "do";
+  if (!urgent && important)
+    return "schedule";
+  if (urgent && !important)
+    return "delegate";
+  return "drop";
+}
+var QUADRANT_COLOR = {
+  do: "hsl(4, 72%, 54%)",
+  // red — fire
+  schedule: "hsl(210, 68%, 54%)",
+  // blue — plan
+  delegate: "hsl(38, 82%, 52%)",
+  // amber — hand off
+  drop: "hsl(220, 9%, 55%)"
+  // grey — let go
+};
 var DEFAULT_MANAGED_FILE = "Tasks.md";
 var DEFAULT_SETTINGS = {
   managedFiles: DEFAULT_MANAGED_FILE,
@@ -45,6 +70,16 @@ var TABS = [
   { id: "backlog", label: "Backlog" },
   { id: "completed", label: "Completed" },
   { id: "assigned", label: "Assigned" }
+];
+var QUAD_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "do", label: "Urgent & Important" },
+  { id: "schedule", label: "Important \xB7 Not urgent" },
+  { id: "delegate", label: "Urgent \xB7 Not important" },
+  { id: "drop", label: "Neither" },
+  { id: "urgent", label: "Just Urgent" },
+  { id: "important", label: "Just Important" },
+  { id: "unjudged", label: "Needs review" }
 ];
 function projectColor(project) {
   let hash = 0;
@@ -150,6 +185,14 @@ function normalizeEffort(value) {
     return v;
   return null;
 }
+function normalizeImportant(value) {
+  const v = value.trim().toLowerCase();
+  if (v === "true" || v === "yes" || v === "1" || v === "high")
+    return true;
+  if (v === "false" || v === "no" || v === "0" || v === "low")
+    return false;
+  return null;
+}
 function extractInlineFields(text) {
   const out = {};
   const re = new RegExp(INLINE_FIELD_RE.source, "g");
@@ -186,7 +229,8 @@ function parseTaskLine(line, filePath, lineNumber) {
     effort: fields["effort"] ? normalizeEffort(fields["effort"]) : null,
     pushes: Number.isFinite(pushesParsed) && pushesParsed > 0 ? pushesParsed : 0,
     project: fields["project"] || null,
-    assigned: fields["assigned"] || null
+    assigned: fields["assigned"] || null,
+    important: fields["important"] !== void 0 ? normalizeImportant(fields["important"]) : null
   };
 }
 function parseTasksFromContent(content, filePath) {
@@ -444,6 +488,12 @@ function buildEffortLine(task, effort) {
 }
 async function setTaskEffort(app, task, effort) {
   await replaceTaskLine(app, task, buildEffortLine(task, effort));
+}
+function buildImportantLine(task, important) {
+  return important === null ? removeInlineField(task.rawText, "important") : setInlineField(task.rawText, "important", important ? "true" : "false");
+}
+async function setTaskImportant(app, task, important) {
+  await replaceTaskLine(app, task, buildImportantLine(task, important));
 }
 function buildProjectLine(task, project) {
   const trimmed = project == null ? void 0 : project.trim();
@@ -743,6 +793,7 @@ function buildCaptureBody(app, input) {
 var import_obsidian4 = require("obsidian");
 
 // src/filters.ts
+var URGENT_WINDOW_DAYS = 2;
 function isResting(task, today = startOfToday()) {
   return !!task.defer && task.defer.getTime() > today.getTime();
 }
@@ -751,6 +802,47 @@ function isOverdue(task, today = startOfToday()) {
 }
 function isDueToday(task, today = startOfToday()) {
   return task.status === "open" && !!task.due && isSameDay(task.due, today);
+}
+function isUrgent(task, today = startOfToday()) {
+  if (!task.due)
+    return false;
+  if (isResting(task, today))
+    return false;
+  const horizon = addDays(today, URGENT_WINDOW_DAYS);
+  return task.due.getTime() <= horizon.getTime();
+}
+function isImportant(task) {
+  return task.important === true;
+}
+function isUnjudged(task) {
+  return task.important === null;
+}
+function quadrantOf(task, today = startOfToday()) {
+  return quadrantFor(isUrgent(task, today), isImportant(task));
+}
+function matchesQuadFilter(task, filter, today = startOfToday()) {
+  if (filter === "all")
+    return true;
+  const urgent = isUrgent(task, today);
+  const important = isImportant(task);
+  switch (filter) {
+    case "do":
+      return urgent && important;
+    case "schedule":
+      return !urgent && important;
+    case "delegate":
+      return urgent && !important;
+    case "drop":
+      return !urgent && !important && !isUnjudged(task);
+    case "urgent":
+      return urgent;
+    case "important":
+      return important;
+    case "unjudged":
+      return isUnjudged(task);
+    default:
+      return true;
+  }
 }
 function compareForToday(a, b, today = startOfToday()) {
   const rank = (t) => {
@@ -784,8 +876,9 @@ function compareCompleted(a, b) {
     return bt - at;
   return a.title.localeCompare(b.title);
 }
-function bucketFor(tasks, tab, today = startOfToday()) {
-  const open = tasks.filter((t) => t.status === "open");
+function bucketFor(tasks, tab, today = startOfToday(), quad = "all") {
+  const scoped = quad === "all" ? tasks : tasks.filter((t) => matchesQuadFilter(t, quad, today));
+  const open = scoped.filter((t) => t.status === "open");
   const weekEnd = addDays(today, 6);
   let selected;
   const tomorrow = addDays(today, 1);
@@ -801,7 +894,7 @@ function bucketFor(tasks, tab, today = startOfToday()) {
       );
       break;
     case "assigned":
-      selected = tasks.filter((t) => !!t.assigned);
+      selected = scoped.filter((t) => !!t.assigned);
       break;
     case "week":
       selected = open.filter(
@@ -817,7 +910,7 @@ function bucketFor(tasks, tab, today = startOfToday()) {
       );
       break;
     case "completed":
-      selected = tasks.filter((t) => t.status === "done");
+      selected = scoped.filter((t) => t.status === "done");
       break;
     default:
       selected = open;
@@ -834,6 +927,8 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.activeTab = "today";
+    this.activeQuad = "all";
+    this.matrixView = false;
     this.tasks = [];
     this.loading = false;
     this.layout = "card";
@@ -857,6 +952,20 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     const header = root.createDiv({ cls: "smart-todo-header" });
     this.tabBarEl = header.createDiv({ cls: "smart-todo-tabs" });
     const actions = header.createDiv({ cls: "smart-todo-header-actions" });
+    const matrixBtn = actions.createEl("button", {
+      cls: "smart-todo-matrix-toggle",
+      attr: { "aria-label": "Toggle Eisenhower matrix" }
+    });
+    const paintMatrixBtn = () => {
+      (0, import_obsidian4.setIcon)(matrixBtn, "layout-grid");
+      matrixBtn.toggleClass("is-active", this.matrixView);
+    };
+    paintMatrixBtn();
+    matrixBtn.addEventListener("click", () => {
+      this.matrixView = !this.matrixView;
+      paintMatrixBtn();
+      this.render();
+    });
     const layoutBtn = actions.createEl("button", {
       cls: "smart-todo-layout-toggle",
       attr: { "aria-label": "Toggle card / table layout" }
@@ -874,10 +983,12 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     });
     (0, import_obsidian4.setIcon)(refreshBtn, "refresh-cw");
     refreshBtn.addEventListener("click", () => void this.refresh());
+    this.quadBarEl = root.createDiv({ cls: "smart-todo-quadbar" });
     this.renderAddRow(root);
     this.summaryEl = root.createDiv({ cls: "smart-todo-summary" });
     this.listEl = root.createDiv({ cls: "smart-todo-list" });
     this.renderTabs();
+    this.renderQuadFilters();
     await this.refresh();
   }
   async onClose() {
@@ -890,6 +1001,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     this.render();
     this.tasks = await this.plugin.scan();
     this.loading = false;
+    this.renderQuadFilters();
     this.render();
   }
   /**
@@ -943,8 +1055,63 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       btn.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.renderTabs();
+        this.renderQuadFilters();
         this.render();
       });
+    }
+  }
+  /**
+   * The Eisenhower filter row. Each button carries a live count of how many
+   * open tasks in the current tab land in that slice — so the bar doubles as a
+   * matrix review: you can see at a glance that "Urgent & Important" is 9 and
+   * "Needs review" is 40 without clicking anything.
+   */
+  renderQuadFilters() {
+    if (!this.quadBarEl)
+      return;
+    this.quadBarEl.empty();
+    const today = startOfToday();
+    const tabSet = bucketFor(this.tasks, this.activeTab, today, "all").tasks;
+    for (const f of QUAD_FILTERS) {
+      const count = f.id === "all" ? tabSet.length : tabSet.filter((t) => this.quadFilterMatch(t, f.id, today)).length;
+      const btn = this.quadBarEl.createEl("button", {
+        cls: "smart-todo-quad-btn"
+      });
+      btn.createSpan({ cls: "smart-todo-quad-label", text: f.label });
+      btn.createSpan({ cls: "smart-todo-quad-count", text: String(count) });
+      if (f.id === this.activeQuad)
+        btn.addClass("is-active");
+      if (count === 0 && f.id !== "all")
+        btn.addClass("is-empty");
+      btn.addEventListener("click", () => {
+        this.activeQuad = f.id;
+        this.renderQuadFilters();
+        this.render();
+      });
+    }
+  }
+  /** Thin wrapper so the view doesn't re-import the predicate guts. */
+  quadFilterMatch(task, id, today) {
+    const urgent = isUrgent(task, today);
+    const important = task.important === true;
+    const unjudged = isUnjudged(task);
+    switch (id) {
+      case "do":
+        return urgent && important;
+      case "schedule":
+        return !urgent && important;
+      case "delegate":
+        return urgent && !important;
+      case "drop":
+        return !urgent && !important && !unjudged;
+      case "urgent":
+        return urgent;
+      case "important":
+        return important;
+      case "unjudged":
+        return unjudged;
+      default:
+        return true;
     }
   }
   render() {
@@ -957,9 +1124,24 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       this.summaryEl.setText("Scanning\u2026");
       return;
     }
-    const { tasks, restingCount } = bucketFor(this.tasks, this.activeTab, today);
+    const quad = this.matrixView ? "all" : this.activeQuad;
+    const { tasks, restingCount } = bucketFor(
+      this.tasks,
+      this.activeTab,
+      today,
+      quad
+    );
     const countLabel = `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
     this.summaryEl.createSpan({ cls: "smart-todo-count", text: countLabel });
+    if (!this.matrixView && this.activeQuad !== "all") {
+      const def = QUAD_FILTERS.find((f) => f.id === this.activeQuad);
+      if (def) {
+        this.summaryEl.createSpan({
+          cls: "smart-todo-filter-tag",
+          text: `\xB7 ${def.label}`
+        });
+      }
+    }
     if (this.activeTab === "today" || this.activeTab === "week") {
       if (restingCount > 0) {
         this.summaryEl.createSpan({
@@ -982,11 +1164,53 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       return;
     }
     const ordered = this.applySort(tasks, today);
-    if (this.layout === "table") {
+    if (this.matrixView) {
+      this.renderMatrix(this.listEl, ordered, today);
+    } else if (this.layout === "table") {
       this.renderTable(this.listEl, ordered, today);
     } else {
       for (const task of ordered) {
         this.renderRow(this.listEl, task, today);
+      }
+    }
+  }
+  /**
+   * The 2×2 Eisenhower grid: four quadrant cells, each holding the compact
+   * rows that fall in it. Urgent on the left column, Important on the top row,
+   * so Q1 (Do) sits top-left where the eye lands first.
+   */
+  renderMatrix(parent, tasks, today) {
+    const grid = parent.createDiv({ cls: "smart-todo-matrix" });
+    const byQuad = {
+      do: [],
+      schedule: [],
+      delegate: [],
+      drop: []
+    };
+    for (const t of tasks)
+      byQuad[quadrantOf(t, today)].push(t);
+    const order = ["do", "schedule", "delegate", "drop"];
+    for (const q of order) {
+      const def = QUADRANTS.find((d) => d.id === q);
+      const cell = grid.createDiv({ cls: `smart-todo-quad-cell is-${q}` });
+      cell.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+      const head = cell.createDiv({ cls: "smart-todo-quad-head" });
+      head.createSpan({ cls: "smart-todo-quad-title", text: def.label });
+      head.createSpan({
+        cls: "smart-todo-quad-advice",
+        text: def.advice
+      });
+      head.createSpan({
+        cls: "smart-todo-quad-tally",
+        text: String(byQuad[q].length)
+      });
+      const body = cell.createDiv({ cls: "smart-todo-quad-body" });
+      if (byQuad[q].length === 0) {
+        body.createDiv({ cls: "smart-todo-quad-empty", text: "\u2014" });
+        continue;
+      }
+      for (const task of byQuad[q]) {
+        this.renderRow(body, task, today);
       }
     }
   }
@@ -1000,6 +1224,12 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       return tasks;
     const { key, dir } = this.sort;
     const mul = dir === "asc" ? 1 : -1;
+    const quadRank = {
+      do: 0,
+      schedule: 1,
+      delegate: 2,
+      drop: 3
+    };
     const val = (t) => {
       var _a;
       switch (key) {
@@ -1011,6 +1241,8 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
           return t.effort ? EFFORT_WEIGHT[t.effort] : 0;
         case "project":
           return ((_a = t.project) != null ? _a : "").toLowerCase();
+        case "quadrant":
+          return quadRank[quadrantOf(t, today)];
         default:
           return t.title.toLowerCase();
       }
@@ -1051,13 +1283,27 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       await this.refresh();
     });
     const main = row.createDiv({ cls: "smart-todo-main" });
-    const titleEl = main.createDiv({
+    const titleRow = main.createDiv({ cls: "smart-todo-title-row" });
+    this.renderImportanceToggle(titleRow, task);
+    const titleEl = titleRow.createDiv({
       cls: "smart-todo-title",
       text: task.title || "(untitled task)"
     });
     titleEl.addEventListener("click", () => void this.revealTask(task));
     titleEl.setAttr("title", `${task.filePath}:${task.lineNumber + 1}`);
     const meta = main.createDiv({ cls: "smart-todo-meta" });
+    if (task.status === "open") {
+      const q = quadrantOf(task, today);
+      const def = QUADRANTS.find((d) => d.id === q);
+      const qpill = meta.createSpan({
+        cls: `smart-todo-quadpill is-${q}`,
+        text: def.label,
+        attr: { "aria-label": `${def.label} \u2014 ${def.advice}` }
+      });
+      qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+      if (isUnjudged(task))
+        qpill.addClass("is-unjudged");
+    }
     if (task.due) {
       meta.createSpan({
         cls: "smart-todo-date",
@@ -1116,6 +1362,38 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         await this.refresh();
       });
     }
+  }
+  /**
+   * Importance star. Three states cycle on click:
+   *   unjudged (?) → important (★) → not important (☆) → unjudged
+   * Right-click clears straight back to unjudged. This is the one control that
+   * sets the "important" axis; urgency is never set by hand.
+   */
+  renderImportanceToggle(parent, task) {
+    const state = task.important === true ? "yes" : task.important === false ? "no" : "unjudged";
+    const star = parent.createSpan({
+      cls: `smart-todo-star is-${state}`,
+      attr: {
+        "aria-label": state === "yes" ? "Important \u2014 click to mark not important" : state === "no" ? "Not important \u2014 click to clear" : "Importance not set \u2014 click to mark important"
+      }
+    });
+    (0, import_obsidian4.setIcon)(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
+    const cycle = async () => {
+      const next = task.important === null ? true : task.important === true ? false : null;
+      await safeWrite(() => setTaskImportant(this.app, task, next));
+      await this.refresh();
+    };
+    star.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void cycle();
+    });
+    star.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void safeWrite(() => setTaskImportant(this.app, task, null)).then(
+        () => this.refresh()
+      );
+    });
   }
   showEffortMenu(evt, task) {
     const menu = new import_obsidian4.Menu();
@@ -1178,6 +1456,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     const headRow = thead.createEl("tr");
     const cols = [
       { key: "title", label: "Task" },
+      { key: "quadrant", label: "Priority" },
       { key: "due", label: "Due" },
       { key: "pushes", label: "Pushes" },
       { key: "effort", label: "Effort" },
@@ -1232,6 +1511,22 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         text: task.title || "(untitled task)"
       });
       titleSpan.addEventListener("click", () => void this.revealTask(task));
+      const quadTd = tr.createEl("td", { cls: "smart-todo-td-quadrant" });
+      this.renderImportanceToggle(quadTd, task);
+      if (task.status === "open") {
+        const q = quadrantOf(task, today);
+        const def = QUADRANTS.find((d) => d.id === q);
+        const qpill = quadTd.createSpan({
+          cls: `smart-todo-quadpill is-${q}`,
+          text: def.label,
+          attr: { "aria-label": def.advice }
+        });
+        qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+        if (isUnjudged(task))
+          qpill.addClass("is-unjudged");
+      } else {
+        quadTd.createSpan({ cls: "smart-todo-quad-na", text: "\u2014" });
+      }
       const dueTd = tr.createEl("td", { cls: "smart-todo-td-due" });
       dueTd.setText(task.due ? this.humanDate(task.due, today) : "\u2014");
       const pushTd = tr.createEl("td", { cls: "smart-todo-td-pushes" });

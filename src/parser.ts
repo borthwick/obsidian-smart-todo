@@ -81,6 +81,18 @@ function normalizeEffort(value: string): Effort | null {
   return null;
 }
 
+/**
+ * Parse the stored Eisenhower "important" judgment.
+ * `true/yes/1/high` → true, `false/no/0/low` → false, anything else → null
+ * (unjudged). Unjudged is a first-class state: it's the review queue.
+ */
+function normalizeImportant(value: string): boolean | null {
+  const v = value.trim().toLowerCase();
+  if (v === "true" || v === "yes" || v === "1" || v === "high") return true;
+  if (v === "false" || v === "no" || v === "0" || v === "low") return false;
+  return null;
+}
+
 /** Collect every `[key:: value]` on a line, lowercased keys. */
 export function extractInlineFields(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -139,6 +151,10 @@ export function parseTaskLine(
     pushes: Number.isFinite(pushesParsed) && pushesParsed > 0 ? pushesParsed : 0,
     project: fields["project"] || null,
     assigned: fields["assigned"] || null,
+    important:
+      fields["important"] !== undefined
+        ? normalizeImportant(fields["important"])
+        : null,
   };
 }
 

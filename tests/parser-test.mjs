@@ -325,6 +325,82 @@ check(
   2
 );
 
+// --- Eisenhower matrix: importance parsing + urgency/quadrant logic -----
+//
+// Synthetic tasks (not the shared fixture, whose counts are asserted above).
+// today pinned to 2026-11-14 so urgency windows are deterministic.
+
+console.log("\n=== EISENHOWER MATRIX ===");
+
+const { isUrgent, isImportant, isUnjudged, quadrantOf, matchesQuadFilter } =
+  mod.filters;
+const { buildImportantLine } = mod.writer;
+
+const EISEN = `# Eisenhower fixture
+- [ ] Fire: due today, important 📅 2026-11-14 [important:: true]
+- [ ] Soon fire: due tomorrow, important 📅 2026-11-15 [important:: true]
+- [ ] Overdue + important 📅 2026-11-10 [important:: true]
+- [ ] Important but far off 📅 2026-12-20 [important:: true]
+- [ ] Undated but important [important:: true]
+- [ ] Urgent not important: due today 📅 2026-11-14 [important:: false]
+- [ ] Neither: far off, not important 📅 2026-12-20 [important:: false]
+- [ ] Unjudged, due today 📅 2026-11-14
+- [ ] Unjudged, undated
+- [ ] Deferred past due is not urgent 📅 2026-11-14 ⏳ 2027-01-01 [important:: true]
+`;
+const et = parseTasksFromContent(EISEN, "Eisenhower.md");
+const byTitle = (p) => et.find((t) => t.title.startsWith(p));
+
+console.log("\n[important field parsing]");
+check("'true' → important=true", byTitle("Fire").important, true);
+check("'false' → important=false", byTitle("Urgent not important").important, false);
+check("absent → important=null (unjudged)", byTitle("Unjudged, due today").important, null);
+
+console.log("\n[urgency derived from the due date, 2-day window]");
+check("due today is urgent", isUrgent(byTitle("Fire"), TODAY), true);
+check("due tomorrow is urgent", isUrgent(byTitle("Soon fire"), TODAY), true);
+check("overdue is urgent", isUrgent(byTitle("Overdue"), TODAY), true);
+check("due in >2 days is not urgent", isUrgent(byTitle("Important but far off"), TODAY), false);
+check("undated is never urgent", isUrgent(byTitle("Undated but important"), TODAY), false);
+check("future-deferred is NOT urgent even if due soon", isUrgent(byTitle("Deferred past due"), TODAY), false);
+
+console.log("\n[quadrant placement]");
+check("urgent+important → do", quadrantOf(byTitle("Fire"), TODAY), "do");
+check("important, not urgent → schedule", quadrantOf(byTitle("Important but far off"), TODAY), "schedule");
+check("urgent, not important → delegate", quadrantOf(byTitle("Urgent not important"), TODAY), "delegate");
+check("neither → drop", quadrantOf(byTitle("Neither"), TODAY), "drop");
+check("unjudged treated as not-important for placement", quadrantOf(byTitle("Unjudged, due today"), TODAY), "delegate");
+
+console.log("\n[filter buttons]");
+const pass = (id) => et.filter((t) => matchesQuadFilter(t, id, TODAY)).map((t) => t.title);
+check("'all' passes everything", et.every((t) => matchesQuadFilter(t, "all", TODAY)), true);
+// 6 important tasks total (Fire, Soon fire, Overdue, Far-off, Undated,
+// Deferred-past-due). 3 of them are urgent (Fire, Soon fire, Overdue) → "do";
+// the other 3 are not urgent (Far-off, Undated, Deferred) → "schedule".
+check("'do' = urgent & important (3)", pass("do").length, 3);
+check("'schedule' = important, not urgent (3)", pass("schedule").length, 3);
+check("'delegate' = urgent, not important (2)", pass("delegate").length, 2);
+check("'drop' excludes unjudged (1)", pass("drop").length, 1);
+check("'important' = any importance=true (6)", pass("important").length, 6);
+check("'urgent' = any urgency (5)", pass("urgent").length, 5);
+check("'unjudged' = importance unset (2)", pass("unjudged").length, 2);
+
+console.log("\n[bucketFor applies the quad filter]");
+const bWeek = bucketFor(et, "week", TODAY, "do");
+console.log(`  This Week + 'do': ${bWeek.tasks.map((t) => t.title).join(" | ") || "(none)"}`);
+check("This Week + 'do' keeps only urgent+important in-week", bWeek.tasks.every((t) => quadrantOf(t, TODAY) === "do"), true);
+
+console.log("\n[importance write-back]");
+const impLine = buildImportantLine(byTitle("Unjudged, due today"), true);
+console.log(`  set important: ${impLine.trim()}`);
+check("writes [important:: true]", /\[important:: true\]/.test(impLine), true);
+const clearLine = buildImportantLine(byTitle("Fire"), null);
+console.log(`  clear important: ${clearLine.trim()}`);
+check("clearing removes the field", /important::/.test(clearLine), false);
+const flipLine = buildImportantLine(byTitle("Fire"), false);
+check("flips true→false in place", /\[important:: false\]/.test(flipLine), true);
+check("no duplicate field on flip", (flipLine.match(/important::/g) || []).length, 1);
+
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`
 );

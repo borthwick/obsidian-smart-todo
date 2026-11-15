@@ -1,7 +1,13 @@
 // Smart ToDo — Today view (right-leaf ItemView).
 
 import { ItemView, Menu, Modal, WorkspaceLeaf, setIcon } from "obsidian";
-import { bucketFor, isResting } from "./filters";
+import {
+  bucketFor,
+  isResting,
+  isUnjudged,
+  isUrgent,
+  quadrantOf,
+} from "./filters";
 import { addDays, formatDate, isSameDay, startOfToday } from "./parser";
 import { describeScope } from "./scope";
 import {
@@ -9,6 +15,11 @@ import {
   EFFORT_WEIGHT,
   Effort,
   Layout,
+  QUADRANTS,
+  QUAD_FILTERS,
+  QUADRANT_COLOR,
+  QuadFilterId,
+  Quadrant,
   SmartTask,
   SortKey,
   SortState,
@@ -21,6 +32,7 @@ import {
   pushTask,
   safeWrite,
   setTaskEffort,
+  setTaskImportant,
   setTaskProject,
   toggleTaskDone,
 } from "./writer";
@@ -29,12 +41,15 @@ import type SmartTodoPlugin from "./main";
 export class SmartTodoView extends ItemView {
   plugin: SmartTodoPlugin;
   activeTab: TabId = "today";
+  activeQuad: QuadFilterId = "all";
+  matrixView = false;
   tasks: SmartTask[] = [];
   loading = false;
   layout: Layout = "card";
   sort: SortState | null = null;
 
   private tabBarEl: HTMLElement;
+  private quadBarEl: HTMLElement;
   private summaryEl: HTMLElement;
   private listEl: HTMLElement;
   private addInputEl: HTMLInputElement;
@@ -68,6 +83,22 @@ export class SmartTodoView extends ItemView {
 
     const actions = header.createDiv({ cls: "smart-todo-header-actions" });
 
+    // Matrix toggle: flip the list for a 2×2 Eisenhower grid of the same set.
+    const matrixBtn = actions.createEl("button", {
+      cls: "smart-todo-matrix-toggle",
+      attr: { "aria-label": "Toggle Eisenhower matrix" },
+    });
+    const paintMatrixBtn = (): void => {
+      setIcon(matrixBtn, "layout-grid");
+      matrixBtn.toggleClass("is-active", this.matrixView);
+    };
+    paintMatrixBtn();
+    matrixBtn.addEventListener("click", () => {
+      this.matrixView = !this.matrixView;
+      paintMatrixBtn();
+      this.render();
+    });
+
     const layoutBtn = actions.createEl("button", {
       cls: "smart-todo-layout-toggle",
       attr: { "aria-label": "Toggle card / table layout" },
@@ -88,12 +119,16 @@ export class SmartTodoView extends ItemView {
     setIcon(refreshBtn, "refresh-cw");
     refreshBtn.addEventListener("click", () => void this.refresh());
 
+    // Eisenhower filter buttons — the second filter axis, below the tabs.
+    this.quadBarEl = root.createDiv({ cls: "smart-todo-quadbar" });
+
     this.renderAddRow(root);
 
     this.summaryEl = root.createDiv({ cls: "smart-todo-summary" });
     this.listEl = root.createDiv({ cls: "smart-todo-list" });
 
     this.renderTabs();
+    this.renderQuadFilters();
     await this.refresh();
   }
 
@@ -107,6 +142,7 @@ export class SmartTodoView extends ItemView {
     this.render();
     this.tasks = await this.plugin.scan();
     this.loading = false;
+    this.renderQuadFilters();
     this.render();
   }
 
@@ -162,8 +198,66 @@ export class SmartTodoView extends ItemView {
       btn.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.renderTabs();
+        this.renderQuadFilters();
         this.render();
       });
+    }
+  }
+
+  /**
+   * The Eisenhower filter row. Each button carries a live count of how many
+   * open tasks in the current tab land in that slice — so the bar doubles as a
+   * matrix review: you can see at a glance that "Urgent & Important" is 9 and
+   * "Needs review" is 40 without clicking anything.
+   */
+  private renderQuadFilters(): void {
+    if (!this.quadBarEl) return;
+    this.quadBarEl.empty();
+    const today = startOfToday();
+
+    // Count against the current tab's open set, ignoring the active quad filter
+    // (so the counts don't collapse to the one button you've selected).
+    const tabSet = bucketFor(this.tasks, this.activeTab, today, "all").tasks;
+
+    for (const f of QUAD_FILTERS) {
+      const count =
+        f.id === "all"
+          ? tabSet.length
+          : tabSet.filter((t) => this.quadFilterMatch(t, f.id, today)).length;
+
+      const btn = this.quadBarEl.createEl("button", {
+        cls: "smart-todo-quad-btn",
+      });
+      btn.createSpan({ cls: "smart-todo-quad-label", text: f.label });
+      btn.createSpan({ cls: "smart-todo-quad-count", text: String(count) });
+
+      if (f.id === this.activeQuad) btn.addClass("is-active");
+      if (count === 0 && f.id !== "all") btn.addClass("is-empty");
+
+      btn.addEventListener("click", () => {
+        this.activeQuad = f.id;
+        this.renderQuadFilters();
+        this.render();
+      });
+    }
+  }
+
+  /** Thin wrapper so the view doesn't re-import the predicate guts. */
+  private quadFilterMatch(task: SmartTask, id: QuadFilterId, today: Date): boolean {
+    // Mirror matchesQuadFilter without importing it everywhere; the counts
+    // row needs the same logic the bucket uses.
+    const urgent = isUrgent(task, today);
+    const important = task.important === true;
+    const unjudged = isUnjudged(task);
+    switch (id) {
+      case "do": return urgent && important;
+      case "schedule": return !urgent && important;
+      case "delegate": return urgent && !important;
+      case "drop": return !urgent && !important && !unjudged;
+      case "urgent": return urgent;
+      case "important": return important;
+      case "unjudged": return unjudged;
+      default: return true;
     }
   }
 
@@ -178,10 +272,27 @@ export class SmartTodoView extends ItemView {
       return;
     }
 
-    const { tasks, restingCount } = bucketFor(this.tasks, this.activeTab, today);
+    // In matrix view the 2×2 grid is the filter, so ignore the active quad
+    // button and show the whole tab set laid out by quadrant.
+    const quad = this.matrixView ? "all" : this.activeQuad;
+    const { tasks, restingCount } = bucketFor(
+      this.tasks,
+      this.activeTab,
+      today,
+      quad
+    );
 
     const countLabel = `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
     this.summaryEl.createSpan({ cls: "smart-todo-count", text: countLabel });
+    if (!this.matrixView && this.activeQuad !== "all") {
+      const def = QUAD_FILTERS.find((f) => f.id === this.activeQuad);
+      if (def) {
+        this.summaryEl.createSpan({
+          cls: "smart-todo-filter-tag",
+          text: `· ${def.label}`,
+        });
+      }
+    }
 
     // The resting count is the whole point of defer: it tells you what you've
     // deliberately chosen not to look at, so the short list feels trustworthy.
@@ -217,11 +328,59 @@ export class SmartTodoView extends ItemView {
 
     const ordered = this.applySort(tasks, today);
 
-    if (this.layout === "table") {
+    if (this.matrixView) {
+      this.renderMatrix(this.listEl, ordered, today);
+    } else if (this.layout === "table") {
       this.renderTable(this.listEl, ordered, today);
     } else {
       for (const task of ordered) {
         this.renderRow(this.listEl, task, today);
+      }
+    }
+  }
+
+  /**
+   * The 2×2 Eisenhower grid: four quadrant cells, each holding the compact
+   * rows that fall in it. Urgent on the left column, Important on the top row,
+   * so Q1 (Do) sits top-left where the eye lands first.
+   */
+  private renderMatrix(parent: HTMLElement, tasks: SmartTask[], today: Date): void {
+    const grid = parent.createDiv({ cls: "smart-todo-matrix" });
+
+    const byQuad: Record<Quadrant, SmartTask[]> = {
+      do: [],
+      schedule: [],
+      delegate: [],
+      drop: [],
+    };
+    for (const t of tasks) byQuad[quadrantOf(t, today)].push(t);
+
+    // Grid order: top-left Do, top-right Schedule, bottom-left Delegate,
+    // bottom-right Drop — the canonical layout.
+    const order: Quadrant[] = ["do", "schedule", "delegate", "drop"];
+    for (const q of order) {
+      const def = QUADRANTS.find((d) => d.id === q)!;
+      const cell = grid.createDiv({ cls: `smart-todo-quad-cell is-${q}` });
+      cell.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+
+      const head = cell.createDiv({ cls: "smart-todo-quad-head" });
+      head.createSpan({ cls: "smart-todo-quad-title", text: def.label });
+      head.createSpan({
+        cls: "smart-todo-quad-advice",
+        text: def.advice,
+      });
+      head.createSpan({
+        cls: "smart-todo-quad-tally",
+        text: String(byQuad[q].length),
+      });
+
+      const body = cell.createDiv({ cls: "smart-todo-quad-body" });
+      if (byQuad[q].length === 0) {
+        body.createDiv({ cls: "smart-todo-quad-empty", text: "—" });
+        continue;
+      }
+      for (const task of byQuad[q]) {
+        this.renderRow(body, task, today);
       }
     }
   }
@@ -235,6 +394,13 @@ export class SmartTodoView extends ItemView {
     if (this.layout !== "table" || !this.sort) return tasks;
     const { key, dir } = this.sort;
     const mul = dir === "asc" ? 1 : -1;
+    // Quadrant priority for sorting: Do first, then Schedule, Delegate, Drop.
+    const quadRank: Record<Quadrant, number> = {
+      do: 0,
+      schedule: 1,
+      delegate: 2,
+      drop: 3,
+    };
     const val = (t: SmartTask): number | string => {
       switch (key) {
         case "due":
@@ -245,6 +411,8 @@ export class SmartTodoView extends ItemView {
           return t.effort ? EFFORT_WEIGHT[t.effort] : 0;
         case "project":
           return (t.project ?? "").toLowerCase();
+        case "quadrant":
+          return quadRank[quadrantOf(t, today)];
         default:
           return t.title.toLowerCase();
       }
@@ -283,7 +451,14 @@ export class SmartTodoView extends ItemView {
 
     const main = row.createDiv({ cls: "smart-todo-main" });
 
-    const titleEl = main.createDiv({
+    const titleRow = main.createDiv({ cls: "smart-todo-title-row" });
+
+    // Importance star, left of the title: filled = important, hollow = not,
+    // faint "?" = unjudged. Click cycles unjudged → important → not → unjudged
+    // so the whole matrix can be set without leaving the panel.
+    this.renderImportanceToggle(titleRow, task);
+
+    const titleEl = titleRow.createDiv({
       cls: "smart-todo-title",
       text: task.title || "(untitled task)",
     });
@@ -291,6 +466,22 @@ export class SmartTodoView extends ItemView {
     titleEl.setAttr("title", `${task.filePath}:${task.lineNumber + 1}`);
 
     const meta = main.createDiv({ cls: "smart-todo-meta" });
+
+    // Quadrant pill: the live Eisenhower classification. Colored by quadrant,
+    // labelled with the verb (Do / Schedule / Delegate / Drop). Read-only — it
+    // reflects urgency (from the date) × importance (the star), both set
+    // elsewhere, so it's a result, not another control to fiddle with.
+    if (task.status === "open") {
+      const q = quadrantOf(task, today);
+      const def = QUADRANTS.find((d) => d.id === q)!;
+      const qpill = meta.createSpan({
+        cls: `smart-todo-quadpill is-${q}`,
+        text: def.label,
+        attr: { "aria-label": `${def.label} — ${def.advice}` },
+      });
+      qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+      if (isUnjudged(task)) qpill.addClass("is-unjudged");
+    }
 
     if (task.due) {
       meta.createSpan({
@@ -364,6 +555,46 @@ export class SmartTodoView extends ItemView {
     }
   }
 
+  /**
+   * Importance star. Three states cycle on click:
+   *   unjudged (?) → important (★) → not important (☆) → unjudged
+   * Right-click clears straight back to unjudged. This is the one control that
+   * sets the "important" axis; urgency is never set by hand.
+   */
+  private renderImportanceToggle(parent: HTMLElement, task: SmartTask): void {
+    const state =
+      task.important === true ? "yes" : task.important === false ? "no" : "unjudged";
+    const star = parent.createSpan({
+      cls: `smart-todo-star is-${state}`,
+      attr: {
+        "aria-label":
+          state === "yes"
+            ? "Important — click to mark not important"
+            : state === "no"
+              ? "Not important — click to clear"
+              : "Importance not set — click to mark important",
+      },
+    });
+    setIcon(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
+
+    const cycle = async (): Promise<void> => {
+      const next = task.important === null ? true : task.important === true ? false : null;
+      await safeWrite(() => setTaskImportant(this.app, task, next));
+      await this.refresh();
+    };
+    star.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void cycle();
+    });
+    star.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void safeWrite(() => setTaskImportant(this.app, task, null)).then(() =>
+        this.refresh()
+      );
+    });
+  }
+
   private showEffortMenu(evt: MouseEvent, task: SmartTask): void {
     const menu = new Menu();
     for (const effort of EFFORTS) {
@@ -430,6 +661,7 @@ export class SmartTodoView extends ItemView {
 
     const cols: Array<{ key: SortKey; label: string }> = [
       { key: "title", label: "Task" },
+      { key: "quadrant", label: "Priority" },
       { key: "due", label: "Due" },
       { key: "pushes", label: "Pushes" },
       { key: "effort", label: "Effort" },
@@ -485,6 +717,23 @@ export class SmartTodoView extends ItemView {
         text: task.title || "(untitled task)",
       });
       titleSpan.addEventListener("click", () => void this.revealTask(task));
+
+      // Priority: importance star + quadrant pill
+      const quadTd = tr.createEl("td", { cls: "smart-todo-td-quadrant" });
+      this.renderImportanceToggle(quadTd, task);
+      if (task.status === "open") {
+        const q = quadrantOf(task, today);
+        const def = QUADRANTS.find((d) => d.id === q)!;
+        const qpill = quadTd.createSpan({
+          cls: `smart-todo-quadpill is-${q}`,
+          text: def.label,
+          attr: { "aria-label": def.advice },
+        });
+        qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+        if (isUnjudged(task)) qpill.addClass("is-unjudged");
+      } else {
+        quadTd.createSpan({ cls: "smart-todo-quad-na", text: "—" });
+      }
 
       // Due
       const dueTd = tr.createEl("td", { cls: "smart-todo-td-due" });

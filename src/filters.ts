@@ -4,7 +4,21 @@
 // and testable without a DOM.
 
 import { addDays, isSameDay, startOfToday } from "./parser";
-import { EFFORT_WEIGHT, SmartTask, TabId } from "./types";
+import {
+  EFFORT_WEIGHT,
+  Quadrant,
+  QuadFilterId,
+  SmartTask,
+  TabId,
+  quadrantFor,
+} from "./types";
+
+/**
+ * Days within which a due date counts as "urgent". Overdue is always urgent;
+ * a task due today or tomorrow is urgent; further out is not. Undated tasks
+ * are never urgent — nothing is forcing them.
+ */
+export const URGENT_WINDOW_DAYS = 2;
 
 export interface Buckets {
   tasks: SmartTask[];
@@ -23,6 +37,69 @@ export function isOverdue(task: SmartTask, today = startOfToday()): boolean {
 
 export function isDueToday(task: SmartTask, today = startOfToday()): boolean {
   return task.status === "open" && !!task.due && isSameDay(task.due, today);
+}
+
+// --- Eisenhower axes -----------------------------------------------------
+
+/**
+ * Urgency is DERIVED, never stored: a task is urgent when it's overdue or due
+ * within `URGENT_WINDOW_DAYS`. A resting (future-deferred) task is not urgent
+ * even if its due date is near — the user has explicitly parked it. Undated
+ * tasks are never urgent.
+ */
+export function isUrgent(task: SmartTask, today = startOfToday()): boolean {
+  if (!task.due) return false;
+  if (isResting(task, today)) return false;
+  const horizon = addDays(today, URGENT_WINDOW_DAYS);
+  return task.due.getTime() <= horizon.getTime();
+}
+
+/**
+ * Importance is the STORED judgment. Unjudged (null) is treated as NOT
+ * important for quadrant placement — an un-reviewed task sits in the lower
+ * half until the user decides. `isUnjudged` lets the review queue surface
+ * those separately so they don't hide forever.
+ */
+export function isImportant(task: SmartTask): boolean {
+  return task.important === true;
+}
+
+export function isUnjudged(task: SmartTask): boolean {
+  return task.important === null;
+}
+
+/** The Eisenhower quadrant this task currently falls in. */
+export function quadrantOf(task: SmartTask, today = startOfToday()): Quadrant {
+  return quadrantFor(isUrgent(task, today), isImportant(task));
+}
+
+/** Does `task` pass the quadrant/axis filter button `filter`? */
+export function matchesQuadFilter(
+  task: SmartTask,
+  filter: QuadFilterId,
+  today = startOfToday()
+): boolean {
+  if (filter === "all") return true;
+  const urgent = isUrgent(task, today);
+  const important = isImportant(task);
+  switch (filter) {
+    case "do":
+      return urgent && important;
+    case "schedule":
+      return !urgent && important;
+    case "delegate":
+      return urgent && !important;
+    case "drop":
+      return !urgent && !important && !isUnjudged(task);
+    case "urgent":
+      return urgent;
+    case "important":
+      return important;
+    case "unjudged":
+      return isUnjudged(task);
+    default:
+      return true;
+  }
 }
 
 /**
@@ -76,9 +153,14 @@ function compareCompleted(a: SmartTask, b: SmartTask): number {
 export function bucketFor(
   tasks: SmartTask[],
   tab: TabId,
-  today = startOfToday()
+  today = startOfToday(),
+  quad: QuadFilterId = "all"
 ): Buckets {
-  const open = tasks.filter((t) => t.status === "open");
+  // Apply the Eisenhower button first, so the "when" tab then narrows an
+  // already-quadrant-filtered set. restingCount is still counted off the full
+  // tab set below, so the "resting in backlog" hint stays honest.
+  const scoped = quad === "all" ? tasks : tasks.filter((t) => matchesQuadFilter(t, quad, today));
+  const open = scoped.filter((t) => t.status === "open");
   const weekEnd = addDays(today, 6);
 
   let selected: SmartTask[];
@@ -100,7 +182,7 @@ export function bucketFor(
     case "assigned":
       // Delegated work: anything with an assignee, open or not, so you can
       // track what you're waiting on from other people.
-      selected = tasks.filter((t) => !!t.assigned);
+      selected = scoped.filter((t) => !!t.assigned);
       break;
     case "week":
       selected = open.filter(
@@ -116,7 +198,7 @@ export function bucketFor(
       );
       break;
     case "completed":
-      selected = tasks.filter((t) => t.status === "done");
+      selected = scoped.filter((t) => t.status === "done");
       break;
     default:
       selected = open;

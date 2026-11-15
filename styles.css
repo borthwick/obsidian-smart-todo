@@ -472,3 +472,206 @@
   justify-content: flex-end;
   gap: var(--size-2-2);
 }
+
+/* ======================================================================
+   Eisenhower matrix: filter bar, importance star, quadrant pills, grid
+   ====================================================================== */
+
+/* ---------- filter button bar (second axis, under the tabs) ---------- */
+
+.smart-todo-quadbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-1);
+  padding: var(--size-2-2) 0 var(--size-2-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: var(--size-2-2);
+}
+
+.smart-todo-quad-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px var(--size-2-3);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.smart-todo-quad-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.smart-todo-quad-btn.is-active {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  font-weight: var(--font-semibold);
+}
+
+.smart-todo-quad-btn.is-empty {
+  opacity: 0.45;
+}
+
+.smart-todo-quad-count {
+  min-width: 1.4em;
+  padding: 0 4px;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--text-faint);
+  background: var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.smart-todo-quad-btn.is-active .smart-todo-quad-count {
+  color: var(--text-on-accent);
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.smart-todo-filter-tag {
+  margin-left: var(--size-2-2);
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+/* ---------- matrix toggle button in the header ---------- */
+
+.smart-todo-matrix-toggle {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+.smart-todo-matrix-toggle:hover {
+  color: var(--text-normal);
+}
+.smart-todo-matrix-toggle.is-active {
+  color: var(--interactive-accent);
+}
+
+/* ---------- importance star ---------- */
+
+.smart-todo-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+}
+
+.smart-todo-star {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  line-height: 0;
+}
+.smart-todo-star .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+.smart-todo-star.is-yes {
+  color: var(--color-yellow);
+}
+.smart-todo-star.is-no {
+  color: var(--text-faint);
+}
+.smart-todo-star.is-unjudged {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+.smart-todo-star:hover {
+  opacity: 1;
+  color: var(--color-yellow);
+}
+
+/* ---------- quadrant pill (the live classification) ---------- */
+
+.smart-todo-quadpill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  line-height: 1.5;
+  color: #fff;
+  background: var(--quad-color, var(--text-muted));
+  border-radius: var(--radius-s);
+}
+.smart-todo-quadpill.is-unjudged {
+  opacity: 0.55;
+}
+.smart-todo-quad-na {
+  color: var(--text-faint);
+}
+
+/* ---------- 2x2 matrix grid ---------- */
+
+.smart-todo-matrix {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--size-2-3);
+}
+
+.smart-todo-quad-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-top: 3px solid var(--quad-color, var(--background-modifier-border));
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  overflow: hidden;
+}
+
+.smart-todo-quad-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) var(--size-2-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.smart-todo-quad-title {
+  font-weight: var(--font-semibold);
+  color: var(--quad-color, var(--text-normal));
+}
+.smart-todo-quad-advice {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+.smart-todo-quad-tally {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.smart-todo-quad-body {
+  padding: var(--size-2-2);
+  overflow-y: auto;
+}
+.smart-todo-quad-body .smart-todo-row {
+  padding: var(--size-2-1) 0;
+}
+.smart-todo-quad-empty {
+  padding: var(--size-2-3);
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* Table priority cell */
+.smart-todo-td-quadrant {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  white-space: nowrap;
+}
