@@ -215,6 +215,151 @@ export async function setTaskProject(
   await replaceTaskLine(app, task, buildProjectLine(task, project));
 }
 
+// --- Full-task edit ------------------------------------------------------
+//
+// Everything above mutates one field. The editor modal needs to change several
+// at once — including the title, which the single-field helpers can't touch
+// because the title isn't a delimited token, it's "whatever text is left".
+
+/** Indent + bullet + checkbox, i.e. everything before the task body. */
+const LINE_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s*)/;
+
+/** The emoji that introduce a dated field, per the Tasks plugin convention. */
+const DATE_EMOJI = "📅⏳✅🛫➕❌";
+/** Tasks-plugin priority emoji, which stand alone with no value after them. */
+const PRIORITY_EMOJI = "🔺⏫🔼🔽⏬";
+
+/**
+ * Every machine-readable token a task line can carry: inline fields, emoji
+ * dates, a 🔁 recurrence rule, and priority emoji. Used to lift the tokens off
+ * a line so the prose title can be swapped without disturbing them.
+ *
+ * Two things this has to get right:
+ *
+ * - The `u` flag is load-bearing. Without it a character class of emoji is
+ *   read as surrogate *code units*, so `[🔺🔼🔽]` quietly contains the bare
+ *   lead surrogate `\ud83d` and matches the first half of any other emoji on
+ *   the line — lifting a broken half-character out of 🔁 and leaving mojibake
+ *   in the file.
+ * - Recurrence is free text (`🔁 every week`), not a date, so it gets its own
+ *   alternative that runs to the next token rather than expecting `YYYY-MM-DD`.
+ */
+const TOKEN_RE = new RegExp(
+  [
+    // [key:: value]
+    String.raw`\[[A-Za-z][\w-]*\s*::\s*[^\]]*\]`,
+    // 🔁 every week  (free text, stops at the next token or end of line)
+    `🔁[^\\[\\]${DATE_EMOJI}${PRIORITY_EMOJI}]*`,
+    // 📅 2026-11-20
+    `[${DATE_EMOJI}]\\s*\\d{4}-\\d{2}-\\d{2}`,
+    // ⏫
+    `[${PRIORITY_EMOJI}]`,
+  ].join("|"),
+  "gu"
+);
+
+/**
+ * Replace the prose title, leaving every token intact and in its original
+ * order. The alternative — rebuilding the line from parsed fields — would
+ * silently drop anything the parser doesn't model yet (🔁 recurrence, a
+ * hand-written `[context:: …]`), so this lifts tokens rather than regenerating
+ * them.
+ */
+export function buildRetitledLine(task: SmartTask, title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) throw new StaleTaskError("Task title can't be empty.");
+
+  const prefixMatch = LINE_PREFIX_RE.exec(task.rawText);
+  if (!prefixMatch) throw new StaleTaskError("Not a task line; refusing to rewrite.");
+  const prefix = prefixMatch[1];
+  const body = task.rawText.slice(prefix.length);
+
+  // Trim each token: the recurrence alternative is greedy up to the next
+  // token, so it carries the separating space along with it.
+  const tokens = (body.match(TOKEN_RE) ?? [])
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  return [prefix + trimmed, ...tokens].join(" ").replace(/\s+$/, "");
+}
+
+export interface TaskPatch {
+  title?: string;
+  due?: Date | null;
+  defer?: Date | null;
+  effort?: Effort | null;
+  important?: boolean | null;
+  project?: string | null;
+  pushes?: number;
+}
+
+/**
+ * Compose one new line from any subset of fields. Applied in a fixed order so
+ * the result is deterministic: title first (it reorders nothing), then dates,
+ * then inline fields. Omitted keys are left exactly as they were — this is a
+ * patch, not a replace, so a field the modal doesn't show can't be erased.
+ */
+export function buildPatchedLine(task: SmartTask, patch: TaskPatch): string {
+  let line = task.rawText;
+
+  if (patch.title !== undefined) {
+    line = buildRetitledLine(task, patch.title);
+  }
+
+  if (patch.due !== undefined) {
+    line =
+      patch.due === null
+        ? removeEmojiDate(line, DUE_RE)
+        : setEmojiDate(line, "📅", DUE_RE, patch.due);
+  }
+
+  if (patch.defer !== undefined) {
+    line =
+      patch.defer === null
+        ? removeEmojiDate(line, DEFER_RE)
+        : setEmojiDate(line, "⏳", DEFER_RE, patch.defer);
+  }
+
+  if (patch.effort !== undefined) {
+    line =
+      patch.effort === null
+        ? removeInlineField(line, "effort")
+        : setInlineField(line, "effort", patch.effort);
+  }
+
+  if (patch.project !== undefined) {
+    const trimmed = patch.project?.trim();
+    line = !trimmed
+      ? removeInlineField(line, "project")
+      : setInlineField(line, "project", trimmed);
+  }
+
+  if (patch.important !== undefined) {
+    line =
+      patch.important === null
+        ? removeInlineField(line, "important")
+        : setInlineField(line, "important", patch.important ? "true" : "false");
+  }
+
+  if (patch.pushes !== undefined) {
+    line =
+      patch.pushes <= 0
+        ? removeInlineField(line, "pushes")
+        : setInlineField(line, "pushes", String(patch.pushes));
+  }
+
+  return line.replace(/\s+$/, "");
+}
+
+export async function applyTaskPatch(
+  app: App,
+  task: SmartTask,
+  patch: TaskPatch
+): Promise<void> {
+  const next = buildPatchedLine(task, patch);
+  if (next === task.rawText) return; // nothing changed; don't touch the file
+  await replaceTaskLine(app, task, next);
+}
+
 // --- Task capture --------------------------------------------------------
 
 /** Default body for an auto-created managed file. */

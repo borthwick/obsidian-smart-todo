@@ -27,7 +27,10 @@ writeFileSync(
   obsidianStub,
   `class Notice { constructor(m) { this.message = m; } }
    class TFile {}
-   module.exports = { Notice, TFile };\n`
+   // The migration preview lives in categorize.ts next to its planner; the
+   // planner is pure, so a hollow Modal is enough to let the module load.
+   class Modal { constructor(app) { this.app = app; } }
+   module.exports = { Notice, TFile, Modal };\n`
 );
 
 await esbuild.build({
@@ -37,6 +40,8 @@ await esbuild.build({
       export * as filters from "./src/filters";
       export * as writer from "./src/writer";
       export * as scope from "./src/scope";
+      export * as types from "./src/types";
+      export * as categorize from "./src/categorize";
     `,
     resolveDir: repo,
     loader: "ts",
@@ -400,6 +405,136 @@ check("clearing removes the field", /important::/.test(clearLine), false);
 const flipLine = buildImportantLine(byTitle("Fire"), false);
 check("flips true→false in place", /\[important:: false\]/.test(flipLine), true);
 check("no duplicate field on flip", (flipLine.match(/important::/g) || []).length, 1);
+
+
+// --- 0.7.0: categories, title rewriting, multi-field patching -----------
+//
+// The patch builder is the riskiest thing in the plugin: it's the one code
+// path that rewrites a whole line rather than one token. These assertions
+// exist to prove it can't silently eat a field it doesn't model.
+
+console.log("\n=== CATEGORIES ===");
+
+const { asCategory, categoryFor } = mod.types;
+
+console.log("\n[canonical values]");
+check("'betaworks' is canonical", asCategory("betaworks"), "betaworks");
+check("'Personal' normalizes case", asCategory("Personal"), "personal");
+check("'Investing' is NOT canonical", asCategory("Investing"), null);
+check("null in → null out", asCategory(null), null);
+
+console.log("\n[legacy folds]");
+check("Investing → betaworks", categoryFor("Investing"), "betaworks");
+check("Research → betaworks", categoryFor("Research"), "betaworks");
+check("Finance → personal (his money, not the fund's)", categoryFor("Finance"), "personal");
+check("Family → personal", categoryFor("Family"), "personal");
+check("Home → personal", categoryFor("Home"), "personal");
+check("Health → health", categoryFor("Health"), "health");
+check("unknown value falls back to personal", categoryFor("Gardening"), "personal");
+check("blank stays unset", categoryFor("   "), null);
+check("no project stays unset", categoryFor(null), null);
+
+console.log("\n[migration plan skips what it shouldn't touch]");
+const { planCategoryMigration } = mod.categorize;
+const MIG = `# Migration fixture
+- [ ] Already canonical [project:: betaworks]
+- [ ] Legacy work item [project:: Investing]
+- [ ] Legacy life item [project:: Home]
+- [ ] No project at all 📅 2026-11-20
+`;
+const migTasks = parseTasksFromContent(MIG, "Tasks.md");
+const plan = planCategoryMigration(migTasks);
+console.log(`  plan: ${plan.map((c) => `${c.from}→${c.to}`).join(", ") || "(none)"}`);
+check("only non-canonical tagged tasks planned", plan.length, 2);
+check("canonical task untouched", plan.some((c) => c.from === "betaworks"), false);
+check("untagged task untouched", plan.some((c) => !c.from), false);
+check("Investing mapped to betaworks", plan.find((c) => c.from === "Investing").to, "betaworks");
+
+console.log("\n=== TASK EDITOR WRITE-BACK ===");
+
+const { buildRetitledLine, buildPatchedLine } = mod.writer;
+
+// A line carrying every token type, including two the parser does NOT model
+// (🔁 recurrence and a hand-written [context:: …]). Those are the canaries.
+const RICH = `- [ ] Email Vinneth at Plastic re: FDA 📅 2026-11-20 ⏳ 2026-11-18 🔁 every week [effort:: moderate] [project:: Investing] [important:: true] [pushes:: 2] [context:: phone]`;
+const rich = parseTasksFromContent(RICH, "Tasks.md")[0];
+
+console.log("\n[title rewrite preserves every token]");
+const retitled = buildRetitledLine(rich, "Email Vinneth re: FDA submission");
+console.log(`  ${retitled}`);
+check("new title present", retitled.includes("Email Vinneth re: FDA submission"), true);
+check("old title gone", retitled.includes("at Plastic"), false);
+check("due kept", /📅 2026-11-20/.test(retitled), true);
+check("defer kept", /⏳ 2026-11-18/.test(retitled), true);
+check("unmodelled 🔁 recurrence rule kept whole", /🔁 every week/.test(retitled), true);
+// The `u` flag regression guard: without it, the priority-emoji character
+// class matches the lead surrogate of 🔁 and a half-character is lifted out.
+check("no lone surrogate left behind", /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(retitled), false);
+check("unmodelled [context::] field kept", /\[context:: phone\]/.test(retitled), true);
+check("checkbox preserved", retitled.startsWith("- [ ] "), true);
+check("round-trips through the parser", parseTasksFromContent(retitled, "Tasks.md").length, 1);
+check(
+  "re-parsed title is clean",
+  parseTasksFromContent(retitled, "Tasks.md")[0].title,
+  "Email Vinneth re: FDA submission"
+);
+
+console.log("\n[empty title refused rather than writing a blank task]");
+let threw = false;
+try {
+  buildRetitledLine(rich, "   ");
+} catch (e) {
+  threw = true;
+}
+check("blank title throws", threw, true);
+
+console.log("\n[patch = diff only; omitted fields survive untouched]");
+const patched = buildPatchedLine(rich, { project: "betaworks" });
+console.log(`  ${patched}`);
+check("project rewritten", /\[project:: betaworks\]/.test(patched), true);
+check("no duplicate project field", (patched.match(/project::/g) || []).length, 1);
+check("title untouched", patched.includes("Email Vinneth at Plastic re: FDA"), true);
+check("effort untouched", /\[effort:: moderate\]/.test(patched), true);
+check("important untouched", /\[important:: true\]/.test(patched), true);
+check("pushes untouched", /\[pushes:: 2\]/.test(patched), true);
+check("due untouched", /📅 2026-11-20/.test(patched), true);
+
+console.log("\n[multi-field patch applied in one line]");
+const multi = buildPatchedLine(rich, {
+  title: "Email Vinneth re: FDA",
+  due: new Date(2026, 10, 25),
+  defer: null,
+  effort: "light",
+  important: false,
+  project: "betaworks",
+  pushes: 0,
+});
+console.log(`  ${multi}`);
+const reparsed = parseTasksFromContent(multi, "Tasks.md")[0];
+check("title set", reparsed.title, "Email Vinneth re: FDA");
+check("due moved", d(reparsed.due), "2026-11-25");
+check("defer cleared", reparsed.defer, null);
+check("effort set to light", reparsed.effort, "light");
+check("important flipped to false", reparsed.important, false);
+check("category set", reparsed.project, "betaworks");
+check("pushes reset to 0 clears the field", /pushes::/.test(multi), false);
+check("recurrence survives a seven-field patch", /🔁 every week/.test(multi), true);
+check("unmodelled [context::] survives too", /\[context:: phone\]/.test(multi), true);
+check("still a valid open task line", reparsed.status, "open");
+check("no stray double spaces", /  /.test(multi), false);
+
+console.log("\n[empty patch is a no-op]");
+check("no fields → line unchanged", buildPatchedLine(rich, {}), RICH);
+
+console.log("\n[clearing fields]");
+const cleared = buildPatchedLine(rich, { due: null, effort: null, important: null, project: null });
+console.log(`  ${cleared}`);
+check("due removed", /📅/.test(cleared), false);
+check("effort removed", /effort::/.test(cleared), false);
+check("important removed", /important::/.test(cleared), false);
+check("project removed", /project::/.test(cleared), false);
+check("defer survives", /⏳ 2026-11-18/.test(cleared), true);
+check("title survives", cleared.includes("Email Vinneth at Plastic re: FDA"), true);
 
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`

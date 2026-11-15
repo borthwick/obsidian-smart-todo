@@ -22,7 +22,7 @@ __export(main_exports, {
   default: () => SmartTodoPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/types.ts
 var EFFORTS = ["light", "moderate", "heavy"];
@@ -31,6 +31,12 @@ var EFFORT_WEIGHT = {
   moderate: 2,
   light: 1
 };
+var EFFORT_LABEL = {
+  light: "Quickie",
+  moderate: "Moderate",
+  heavy: "Heavy"
+};
+var QUICKIE_HEADING = "Quickies \xB7 3 minutes or less";
 var QUADRANTS = [
   { id: "do", urgent: true, important: true, label: "Do", advice: "Do now" },
   { id: "schedule", urgent: false, important: true, label: "Schedule", advice: "Decide when" },
@@ -60,8 +66,63 @@ var DEFAULT_MANAGED_FILE = "Tasks.md";
 var DEFAULT_SETTINGS = {
   managedFiles: DEFAULT_MANAGED_FILE,
   pushesWarnThreshold: 3,
-  defaultLayout: "card"
+  defaultLayout: "card",
+  groupQuickies: true
 };
+var CATEGORIES = ["betaworks", "personal", "health"];
+var CATEGORY_LABEL = {
+  betaworks: "Betaworks",
+  personal: "Personal",
+  health: "Health"
+};
+var CATEGORY_COLOR = {
+  betaworks: "hsl(212, 70%, 55%)",
+  // blue — work
+  personal: "hsl(150, 50%, 46%)",
+  // green — life
+  health: "hsl(28, 80%, 55%)"
+  // amber — body
+};
+var CATEGORY_ALIASES = {
+  betaworks: "betaworks",
+  investing: "betaworks",
+  investment: "betaworks",
+  portfolio: "betaworks",
+  deals: "betaworks",
+  work: "betaworks",
+  research: "betaworks",
+  camp: "betaworks",
+  lp: "betaworks",
+  health: "health",
+  fitness: "health",
+  medical: "health",
+  doctor: "health",
+  personal: "personal",
+  family: "personal",
+  home: "personal",
+  relationships: "personal",
+  reading: "personal",
+  finance: "personal",
+  money: "personal",
+  admin: "personal",
+  botwick: "personal",
+  "smart todo": "personal"
+};
+function asCategory(raw) {
+  if (!raw)
+    return null;
+  const v = raw.trim().toLowerCase();
+  return CATEGORIES.includes(v) ? v : null;
+}
+function categoryFor(raw) {
+  var _a, _b;
+  if (!raw)
+    return null;
+  const v = raw.trim().toLowerCase();
+  if (!v)
+    return null;
+  return (_b = (_a = asCategory(v)) != null ? _a : CATEGORY_ALIASES[v]) != null ? _b : "personal";
+}
 var TABS = [
   { id: "today", label: "Today" },
   { id: "tomorrow", label: "Tomorrow" },
@@ -148,8 +209,9 @@ var DUE_RE = /📅\s*(\d{4}-\d{2}-\d{2})/;
 var DEFER_RE = /⏳\s*(\d{4}-\d{2}-\d{2})/;
 var DONE_DATE_RE = /✅\s*(\d{4}-\d{2}-\d{2})/;
 var INLINE_FIELD_RE = /\[([A-Za-z][\w-]*)\s*::\s*([^\]]*)\]/g;
-var EMOJI_DATE_TOKEN_RE = /(?:📅|⏳|✅|🛫|➕|❌|🔁)\s*\d{4}-\d{2}-\d{2}/g;
-var PRIORITY_EMOJI_RE = /[🔺⏫🔼🔽⏬]/g;
+var EMOJI_DATE_TOKEN_RE = /(?:📅|⏳|✅|🛫|➕|❌)\s*\d{4}-\d{2}-\d{2}/g;
+var RECURRENCE_TOKEN_RE = /🔁[^[\]📅⏳✅🛫➕❌🔺⏫🔼🔽⏬]*/gu;
+var PRIORITY_EMOJI_RE = /[🔺⏫🔼🔽⏬]/gu;
 function parseDate(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m)
@@ -203,7 +265,7 @@ function extractInlineFields(text) {
   return out;
 }
 function deriveTitle(body) {
-  return body.replace(new RegExp(INLINE_FIELD_RE.source, "g"), "").replace(EMOJI_DATE_TOKEN_RE, "").replace(PRIORITY_EMOJI_RE, "").replace(/\s+/g, " ").trim();
+  return body.replace(new RegExp(INLINE_FIELD_RE.source, "g"), "").replace(EMOJI_DATE_TOKEN_RE, "").replace(RECURRENCE_TOKEN_RE, "").replace(PRIORITY_EMOJI_RE, "").replace(/\s+/g, " ").trim();
 }
 function parseTaskLine(line, filePath, lineNumber) {
   const m = TASK_LINE_RE.exec(line);
@@ -249,7 +311,7 @@ async function scanScope(app, scope) {
   for (const file of files) {
     let content;
     try {
-      content = await app.vault.cachedRead(file);
+      content = await app.vault.read(file);
     } catch (e) {
       continue;
     }
@@ -339,6 +401,25 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
           this.plugin.refreshViews();
         }
       })
+    );
+    new import_obsidian.Setting(el).setName("Group Quickies").setDesc(
+      'Collect light-effort tasks into a "Quickies \xB7 3 minutes or less" section at the foot of the list. Effort is still tagged on every task either way \u2014 this only changes what the panel shows.'
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.groupQuickies).onChange(async (value) => {
+        this.plugin.settings.groupQuickies = value;
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      })
+    );
+    el.createEl("h3", { text: "Categories" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text: "Tasks carry one of three categories \u2014 Betaworks, Personal, Health \u2014 stored in the same [project:: \u2026] field, so Dataview and Tasks queries keep working. Imported tasks with older project names can be folded onto the three in one pass; you'll see every change first."
+    });
+    new import_obsidian.Setting(el).setName("Fold projects into categories").setDesc(
+      "Previews the retag, then applies it one line at a time. Tasks with no project are left alone."
+    ).addButton(
+      (btn) => btn.setButtonText("Review changes").onClick(() => void this.plugin.openCategoryMigration())
     );
   }
 };
@@ -501,6 +582,68 @@ function buildProjectLine(task, project) {
 }
 async function setTaskProject(app, task, project) {
   await replaceTaskLine(app, task, buildProjectLine(task, project));
+}
+var LINE_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s*)/;
+var DATE_EMOJI = "\u{1F4C5}\u23F3\u2705\u{1F6EB}\u2795\u274C";
+var PRIORITY_EMOJI = "\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC";
+var TOKEN_RE = new RegExp(
+  [
+    // [key:: value]
+    String.raw`\[[A-Za-z][\w-]*\s*::\s*[^\]]*\]`,
+    // 🔁 every week  (free text, stops at the next token or end of line)
+    `\u{1F501}[^\\[\\]${DATE_EMOJI}${PRIORITY_EMOJI}]*`,
+    // 📅 2026-11-20
+    `[${DATE_EMOJI}]\\s*\\d{4}-\\d{2}-\\d{2}`,
+    // ⏫
+    `[${PRIORITY_EMOJI}]`
+  ].join("|"),
+  "gu"
+);
+function buildRetitledLine(task, title) {
+  var _a;
+  const trimmed = title.trim();
+  if (!trimmed)
+    throw new StaleTaskError("Task title can't be empty.");
+  const prefixMatch = LINE_PREFIX_RE.exec(task.rawText);
+  if (!prefixMatch)
+    throw new StaleTaskError("Not a task line; refusing to rewrite.");
+  const prefix = prefixMatch[1];
+  const body = task.rawText.slice(prefix.length);
+  const tokens = ((_a = body.match(TOKEN_RE)) != null ? _a : []).map((t) => t.trim()).filter((t) => t.length > 0);
+  return [prefix + trimmed, ...tokens].join(" ").replace(/\s+$/, "");
+}
+function buildPatchedLine(task, patch) {
+  var _a;
+  let line = task.rawText;
+  if (patch.title !== void 0) {
+    line = buildRetitledLine(task, patch.title);
+  }
+  if (patch.due !== void 0) {
+    line = patch.due === null ? removeEmojiDate(line, DUE_RE) : setEmojiDate(line, "\u{1F4C5}", DUE_RE, patch.due);
+  }
+  if (patch.defer !== void 0) {
+    line = patch.defer === null ? removeEmojiDate(line, DEFER_RE) : setEmojiDate(line, "\u23F3", DEFER_RE, patch.defer);
+  }
+  if (patch.effort !== void 0) {
+    line = patch.effort === null ? removeInlineField(line, "effort") : setInlineField(line, "effort", patch.effort);
+  }
+  if (patch.project !== void 0) {
+    const trimmed = (_a = patch.project) == null ? void 0 : _a.trim();
+    line = !trimmed ? removeInlineField(line, "project") : setInlineField(line, "project", trimmed);
+  }
+  if (patch.important !== void 0) {
+    line = patch.important === null ? removeInlineField(line, "important") : setInlineField(line, "important", patch.important ? "true" : "false");
+  }
+  if (patch.pushes !== void 0) {
+    line = patch.pushes <= 0 ? removeInlineField(line, "pushes") : setInlineField(line, "pushes", String(patch.pushes));
+  }
+  return line.replace(/\s+$/, "");
+}
+async function applyTaskPatch(app, task, patch) {
+  const next = buildPatchedLine(task, patch);
+  if (next === task.rawText)
+    return;
+  await replaceTaskLine(app, task, next);
 }
 var MANAGED_FILE_STUB = "# Tasks\n\n";
 function buildAppendedContent(content, title) {
@@ -790,7 +933,7 @@ function buildCaptureBody(app, input) {
 }
 
 // src/view.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/filters.ts
 var URGENT_WINDOW_DAYS = 2;
@@ -922,8 +1065,273 @@ function bucketFor(tasks, tab, today = startOfToday(), quad = "all") {
   };
 }
 
+// src/edit-task-modal.ts
+var import_obsidian4 = require("obsidian");
+function dateInputValue(date) {
+  return date ? formatDate(date) : "";
+}
+var EditTaskModal = class extends import_obsidian4.Modal {
+  constructor(app, task, onSubmit, onReveal) {
+    super(app);
+    this.task = task;
+    this.onSubmit = onSubmit;
+    this.onReveal = onReveal;
+    this.draft = {
+      title: task.title,
+      due: task.due,
+      defer: task.defer,
+      effort: task.effort,
+      // A legacy free-text project folds onto a category for display, but
+      // nothing is written unless the user actually picks one — opening the
+      // editor and cancelling must not silently rewrite the line.
+      category: categoryFor(task.project),
+      important: task.important,
+      pushes: task.pushes
+    };
+  }
+  onOpen() {
+    const { contentEl, modalEl } = this;
+    modalEl.addClass("smart-todo-edit-modal");
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Edit task" });
+    const titleInput = this.field(contentEl, "Task").createEl("input", {
+      cls: "smart-todo-edit-input",
+      attr: { type: "text" }
+    });
+    titleInput.value = this.draft.title;
+    titleInput.addEventListener("input", () => {
+      this.draft.title = titleInput.value;
+    });
+    titleInput.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        void this.submit();
+      }
+    });
+    const catRow = this.field(contentEl, "Category").createDiv({
+      cls: "smart-todo-seg"
+    });
+    const catBtns = /* @__PURE__ */ new Map();
+    const paintCats = () => {
+      for (const [value, btn] of catBtns) {
+        btn.toggleClass("is-active", this.draft.category === value);
+      }
+    };
+    for (const cat of CATEGORIES) {
+      const btn = catRow.createEl("button", {
+        cls: "smart-todo-seg-btn",
+        text: CATEGORY_LABEL[cat]
+      });
+      btn.style.setProperty("--cat-color", CATEGORY_COLOR[cat]);
+      btn.addEventListener("click", () => {
+        this.draft.category = cat;
+        paintCats();
+      });
+      catBtns.set(cat, btn);
+    }
+    const clearCat = catRow.createEl("button", {
+      cls: "smart-todo-seg-btn is-clear",
+      text: "None"
+    });
+    clearCat.addEventListener("click", () => {
+      this.draft.category = null;
+      paintCats();
+    });
+    catBtns.set(null, clearCat);
+    paintCats();
+    const legacy = this.task.project;
+    if (legacy && !CATEGORIES.includes(legacy.toLowerCase())) {
+      catRow.createDiv({
+        cls: "smart-todo-edit-hint",
+        text: `was "${legacy}"`
+      });
+    }
+    const impRow = this.field(
+      contentEl,
+      "Important"
+    ).createDiv({ cls: "smart-todo-seg" });
+    const impOptions = [
+      { value: true, label: "Yes" },
+      { value: false, label: "No" },
+      { value: null, label: "Not judged" }
+    ];
+    const impBtns = [];
+    const paintImp = () => {
+      for (const [value, btn] of impBtns) {
+        btn.toggleClass("is-active", this.draft.important === value);
+      }
+    };
+    for (const opt of impOptions) {
+      const btn = impRow.createEl("button", {
+        cls: "smart-todo-seg-btn",
+        text: opt.label
+      });
+      btn.addEventListener("click", () => {
+        this.draft.important = opt.value;
+        paintImp();
+      });
+      impBtns.push([opt.value, btn]);
+    }
+    paintImp();
+    this.hint(
+      contentEl,
+      "Important = it moves something you actually care about, or someone else is blocked on it. Routine admin is not important, even when it's expensive or overdue."
+    );
+    const effRow = this.field(contentEl, "Effort").createDiv({
+      cls: "smart-todo-seg"
+    });
+    const effBtns = [];
+    const paintEff = () => {
+      for (const [value, btn] of effBtns) {
+        btn.toggleClass("is-active", this.draft.effort === value);
+      }
+    };
+    for (const eff of EFFORTS) {
+      const btn = effRow.createEl("button", {
+        cls: `smart-todo-seg-btn is-effort-${eff}`,
+        text: EFFORT_LABEL[eff]
+      });
+      btn.addEventListener("click", () => {
+        this.draft.effort = eff;
+        paintEff();
+      });
+      effBtns.push([eff, btn]);
+    }
+    const clearEff = effRow.createEl("button", {
+      cls: "smart-todo-seg-btn is-clear",
+      text: "None"
+    });
+    clearEff.addEventListener("click", () => {
+      this.draft.effort = null;
+      paintEff();
+    });
+    effBtns.push([null, clearEff]);
+    paintEff();
+    const dueWrap = this.field(contentEl, "Due");
+    const dueInput = dueWrap.createEl("input", {
+      cls: "smart-todo-edit-date",
+      attr: { type: "date" }
+    });
+    dueInput.value = dateInputValue(this.draft.due);
+    dueInput.addEventListener("change", () => {
+      this.draft.due = dueInput.value ? parseDate(dueInput.value) : null;
+    });
+    this.quickDates(dueWrap, (date) => {
+      this.draft.due = date;
+      dueInput.value = dateInputValue(date);
+    });
+    const deferWrap = this.field(contentEl, "Rest until");
+    const deferInput = deferWrap.createEl("input", {
+      cls: "smart-todo-edit-date",
+      attr: { type: "date" }
+    });
+    deferInput.value = dateInputValue(this.draft.defer);
+    deferInput.addEventListener("change", () => {
+      this.draft.defer = deferInput.value ? parseDate(deferInput.value) : null;
+    });
+    this.hint(
+      deferWrap,
+      "Hidden from Today and This Week until this date. Use it to park something without deleting it."
+    );
+    if (this.task.pushes > 0) {
+      const pushWrap = this.field(
+        contentEl,
+        `Pushed ${this.task.pushes}\xD7`
+      );
+      const reset = pushWrap.createEl("button", {
+        cls: "smart-todo-seg-btn",
+        text: "Reset counter"
+      });
+      reset.addEventListener("click", () => {
+        this.draft.pushes = 0;
+        reset.setText("Will reset to 0");
+        reset.addClass("is-active");
+      });
+    }
+    const actions = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
+    const reveal = actions.createEl("button", {
+      cls: "smart-todo-edit-reveal",
+      text: "Open in note"
+    });
+    (0, import_obsidian4.setIcon)(reveal.createSpan({ cls: "smart-todo-edit-reveal-icon" }), "file-text");
+    reveal.addEventListener("click", () => {
+      this.close();
+      this.onReveal();
+    });
+    const spacer = actions.createDiv({ cls: "smart-todo-modal-spacer" });
+    spacer.setText("");
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.close());
+    const save = actions.createEl("button", { cls: "mod-cta", text: "Save" });
+    save.addEventListener("click", () => void this.submit());
+    titleInput.focus();
+    titleInput.select();
+  }
+  /** Today / Tomorrow / +1w / Clear shortcuts under the due field. */
+  quickDates(parent, set) {
+    const row = parent.createDiv({ cls: "smart-todo-quickdates" });
+    const today = startOfToday();
+    const opts = [
+      { label: "Today", date: today },
+      { label: "Tomorrow", date: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1) },
+      { label: "+1 week", date: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7) },
+      { label: "Clear", date: null }
+    ];
+    for (const opt of opts) {
+      const btn = row.createEl("button", {
+        cls: "smart-todo-quickdate",
+        text: opt.label
+      });
+      btn.addEventListener("click", () => set(opt.date));
+    }
+  }
+  field(parent, label) {
+    const wrap = parent.createDiv({ cls: "smart-todo-edit-field" });
+    wrap.createDiv({ cls: "smart-todo-edit-label", text: label });
+    return wrap;
+  }
+  hint(parent, text) {
+    parent.createDiv({ cls: "smart-todo-edit-hint", text });
+  }
+  /**
+   * Build the patch from what actually changed. Sending only diffs means an
+   * untouched field can't be rewritten (or dropped) by opening the editor.
+   */
+  async submit() {
+    var _a, _b, _c;
+    const patch = {};
+    const d = this.draft;
+    const t = this.task;
+    if (!d.title.trim()) {
+      new import_obsidian4.Notice("Smart ToDo: a task needs a title.", 4e3);
+      return;
+    }
+    if (d.title.trim() !== t.title)
+      patch.title = d.title.trim();
+    const sameDay = (a, b) => a === null || b === null ? a === b : a.getTime() === b.getTime();
+    if (!sameDay(d.due, t.due))
+      patch.due = d.due;
+    if (!sameDay(d.defer, t.defer))
+      patch.defer = d.defer;
+    if (d.effort !== t.effort)
+      patch.effort = d.effort;
+    if (d.important !== t.important)
+      patch.important = d.important;
+    if (d.pushes !== t.pushes)
+      patch.pushes = d.pushes;
+    const currentCanonical = (_b = (_a = t.project) == null ? void 0 : _a.trim().toLowerCase()) != null ? _b : null;
+    if (((_c = d.category) != null ? _c : null) !== currentCanonical)
+      patch.project = d.category;
+    this.close();
+    await this.onSubmit(patch);
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
 // src/view.ts
-var SmartTodoView = class extends import_obsidian4.ItemView {
+var SmartTodoView = class extends import_obsidian5.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.activeTab = "today";
@@ -957,7 +1365,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       attr: { "aria-label": "Toggle Eisenhower matrix" }
     });
     const paintMatrixBtn = () => {
-      (0, import_obsidian4.setIcon)(matrixBtn, "layout-grid");
+      (0, import_obsidian5.setIcon)(matrixBtn, "layout-grid");
       matrixBtn.toggleClass("is-active", this.matrixView);
     };
     paintMatrixBtn();
@@ -970,7 +1378,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       cls: "smart-todo-layout-toggle",
       attr: { "aria-label": "Toggle card / table layout" }
     });
-    const paintLayoutBtn = () => (0, import_obsidian4.setIcon)(layoutBtn, this.layout === "table" ? "list" : "table");
+    const paintLayoutBtn = () => (0, import_obsidian5.setIcon)(layoutBtn, this.layout === "table" ? "list" : "table");
     paintLayoutBtn();
     layoutBtn.addEventListener("click", () => {
       this.layout = this.layout === "table" ? "card" : "table";
@@ -981,7 +1389,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       cls: "smart-todo-refresh",
       attr: { "aria-label": "Rescan vault" }
     });
-    (0, import_obsidian4.setIcon)(refreshBtn, "refresh-cw");
+    (0, import_obsidian5.setIcon)(refreshBtn, "refresh-cw");
     refreshBtn.addEventListener("click", () => void this.refresh());
     this.quadBarEl = root.createDiv({ cls: "smart-todo-quadbar" });
     this.renderAddRow(root);
@@ -1040,7 +1448,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       cls: "smart-todo-add-btn",
       attr: { "aria-label": "Add task" }
     });
-    (0, import_obsidian4.setIcon)(addBtn, "plus");
+    (0, import_obsidian5.setIcon)(addBtn, "plus");
     addBtn.addEventListener("click", () => void commit());
   }
   renderTabs() {
@@ -1055,8 +1463,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       btn.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.renderTabs();
-        this.renderQuadFilters();
-        this.render();
+        void this.refresh();
       });
     }
   }
@@ -1168,11 +1575,41 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       this.renderMatrix(this.listEl, ordered, today);
     } else if (this.layout === "table") {
       this.renderTable(this.listEl, ordered, today);
+    } else if (this.quickiesGrouped()) {
+      this.renderGroupedCards(this.listEl, ordered, today);
     } else {
       for (const task of ordered) {
         this.renderRow(this.listEl, task, today);
       }
     }
+  }
+  /**
+   * Card list with light-effort tasks pulled out into their own section at the
+   * foot: "Quickies · 3 minutes or less".
+   *
+   * The real work and the five-things-you-can-knock-off-now are different
+   * decisions, and interleaving them meant the quick ones padded the list and
+   * made Today look worse than it was. Separating them also gives the batch a
+   * name — "do the quickies" is a thing you can actually act on.
+   */
+  renderGroupedCards(parent, tasks, today) {
+    const quickies = tasks.filter((t) => t.effort === "light");
+    const rest = tasks.filter((t) => t.effort !== "light");
+    for (const task of rest)
+      this.renderRow(parent, task, today);
+    if (quickies.length === 0)
+      return;
+    if (rest.length > 0) {
+      const head = parent.createDiv({ cls: "smart-todo-group-head" });
+      head.createSpan({ cls: "smart-todo-group-title", text: QUICKIE_HEADING });
+      head.createSpan({
+        cls: "smart-todo-group-tally",
+        text: String(quickies.length)
+      });
+    }
+    const body = parent.createDiv({ cls: "smart-todo-group-body" });
+    for (const task of quickies)
+      this.renderRow(body, task, today);
   }
   /**
    * The 2×2 Eisenhower grid: four quadrant cells, each holding the compact
@@ -1258,7 +1695,6 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     });
   }
   renderRow(parent, task, today) {
-    var _a;
     const row = parent.createDiv({ cls: "smart-todo-row" });
     if (task.status === "done")
       row.addClass("is-done");
@@ -1289,8 +1725,8 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
       cls: "smart-todo-title",
       text: task.title || "(untitled task)"
     });
-    titleEl.addEventListener("click", () => void this.revealTask(task));
-    titleEl.setAttr("title", `${task.filePath}:${task.lineNumber + 1}`);
+    titleEl.addEventListener("click", () => this.openEditor(task));
+    titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
     const meta = main.createDiv({ cls: "smart-todo-meta" });
     if (task.status === "open") {
       const q = quadrantOf(task, today);
@@ -1316,19 +1752,20 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         text: `rests until ${this.humanDate(task.defer, today)}`
       });
     }
-    const effortLabel = task.effort ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1) : "Effort";
-    const pill = meta.createSpan({
-      cls: `smart-todo-effort is-${(_a = task.effort) != null ? _a : "unset"}`,
-      text: effortLabel,
-      attr: { "aria-label": "Set effort" }
-    });
-    const openMenu = (evt) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      this.showEffortMenu(evt, task);
-    };
-    pill.addEventListener("click", openMenu);
-    pill.addEventListener("contextmenu", openMenu);
+    if (task.effort === "light" && !this.quickiesGrouped()) {
+      const pill = meta.createSpan({
+        cls: "smart-todo-effort is-light",
+        text: EFFORT_LABEL.light,
+        attr: { "aria-label": "3 minutes or less" }
+      });
+      const openMenu = (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.showEffortMenu(evt, task);
+      };
+      pill.addEventListener("click", openMenu);
+      pill.addEventListener("contextmenu", openMenu);
+    }
     if (task.pushes > 0) {
       const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
       meta.createSpan({
@@ -1339,7 +1776,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         }
       });
     }
-    this.renderProject(meta, task);
+    this.renderCategory(meta, task);
     if (task.assigned) {
       meta.createSpan({ cls: "smart-todo-assigned", text: `@${task.assigned}` });
     }
@@ -1354,7 +1791,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         cls: "smart-todo-push",
         attr: { "aria-label": "Push 1 day" }
       });
-      (0, import_obsidian4.setIcon)(pushBtn, "chevrons-right");
+      (0, import_obsidian5.setIcon)(pushBtn, "chevrons-right");
       pushBtn.addEventListener("click", async (evt) => {
         evt.stopPropagation();
         pushBtn.disabled = true;
@@ -1377,7 +1814,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         "aria-label": state === "yes" ? "Important \u2014 click to mark not important" : state === "no" ? "Not important \u2014 click to clear" : "Importance not set \u2014 click to mark important"
       }
     });
-    (0, import_obsidian4.setIcon)(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
+    (0, import_obsidian5.setIcon)(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
     const cycle = async () => {
       const next = task.important === null ? true : task.important === true ? false : null;
       await safeWrite(() => setTaskImportant(this.app, task, next));
@@ -1396,7 +1833,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     });
   }
   showEffortMenu(evt, task) {
-    const menu = new import_obsidian4.Menu();
+    const menu = new import_obsidian5.Menu();
     for (const effort of EFFORTS) {
       menu.addItem(
         (item) => item.setTitle(effort.charAt(0).toUpperCase() + effort.slice(1)).setChecked(task.effort === effort).onClick(async () => {
@@ -1415,42 +1852,85 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     menu.showAtMouseEvent(evt);
   }
   /**
-   * Project chip: a colored dot + name, or a faint "+ Project" affordance when
-   * unset. Click either to set/change — a project needs to be settable from the
-   * panel, not just from markdown.
+   * Category chip: a colored dot + name, or a faint "+ Category" affordance
+   * when unset. Click opens a three-item menu — Betaworks / Personal / Health
+   * — because the whole point of collapsing eleven free-text projects into
+   * three categories is that picking one should never need typing.
+   *
+   * A legacy, un-migrated value still renders under its own hashed color so
+   * it's visibly *not* one of the three until it's folded.
    */
-  renderProject(parent, task) {
+  renderCategory(parent, task) {
     const chip = parent.createSpan({ cls: "smart-todo-project" });
-    if (task.project) {
+    const canonical = asCategory(task.project);
+    if (canonical) {
+      chip.createSpan({
+        cls: "smart-todo-project-dot",
+        attr: { style: `background:${CATEGORY_COLOR[canonical]}` }
+      });
+      chip.createSpan({
+        cls: "smart-todo-project-name",
+        text: CATEGORY_LABEL[canonical]
+      });
+    } else if (task.project) {
+      chip.addClass("is-legacy");
       chip.createSpan({
         cls: "smart-todo-project-dot",
         attr: { style: `background:${projectColor(task.project)}` }
       });
       chip.createSpan({ cls: "smart-todo-project-name", text: task.project });
+      chip.setAttr("aria-label", "Not one of the three categories \u2014 click to set");
     } else {
       chip.addClass("is-unset");
-      chip.setText("+ Project");
+      chip.setText("+ Category");
     }
     chip.addEventListener("click", (evt) => {
+      evt.preventDefault();
       evt.stopPropagation();
-      this.promptProject(task);
+      this.showCategoryMenu(evt, task);
     });
   }
-  promptProject(task) {
-    var _a;
-    const known = Array.from(
-      new Set(this.tasks.map((t) => t.project).filter((p) => !!p))
-    ).sort();
-    new ProjectPromptModal(this.app, (_a = task.project) != null ? _a : "", known, async (value) => {
-      await safeWrite(
-        () => setTaskProject(this.app, task, value.trim() || null)
+  showCategoryMenu(evt, task) {
+    const current = asCategory(task.project);
+    const menu = new import_obsidian5.Menu();
+    for (const cat of CATEGORIES) {
+      menu.addItem(
+        (item) => item.setTitle(CATEGORY_LABEL[cat]).setChecked(current === cat).onClick(async () => {
+          await safeWrite(() => setTaskProject(this.app, task, cat));
+          await this.refresh();
+        })
       );
-      await this.refresh();
-    }).open();
+    }
+    menu.addSeparator();
+    menu.addItem(
+      (item) => item.setTitle("Clear category").onClick(async () => {
+        await safeWrite(() => setTaskProject(this.app, task, null));
+        await this.refresh();
+      })
+    );
+    menu.showAtMouseEvent(evt);
+  }
+  /** Open the full editor for a task and write back whatever changed. */
+  openEditor(task) {
+    new EditTaskModal(
+      this.app,
+      task,
+      async (patch) => {
+        if (Object.keys(patch).length === 0)
+          return;
+        await safeWrite(() => applyTaskPatch(this.app, task, patch));
+        await this.refresh();
+      },
+      () => void this.revealTask(task)
+    ).open();
+  }
+  /** Is the Quickies section active for the current layout? */
+  quickiesGrouped() {
+    return this.plugin.settings.groupQuickies && this.layout === "card" && !this.matrixView;
   }
   /** Onda-style table: sortable headers + one row per task. */
   renderTable(parent, tasks, today) {
-    var _a, _b;
+    var _a;
     const table = parent.createEl("table", { cls: "smart-todo-table" });
     const thead = table.createEl("thead");
     const headRow = thead.createEl("tr");
@@ -1510,7 +1990,7 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         cls: "smart-todo-title",
         text: task.title || "(untitled task)"
       });
-      titleSpan.addEventListener("click", () => void this.revealTask(task));
+      titleSpan.addEventListener("click", () => this.openEditor(task));
       const quadTd = tr.createEl("td", { cls: "smart-todo-td-quadrant" });
       this.renderImportanceToggle(quadTd, task);
       if (task.status === "open") {
@@ -1540,18 +2020,21 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
         pushTd.setText("\u2014");
       }
       const effTd = tr.createEl("td", { cls: "smart-todo-td-effort" });
-      const effLabel = task.effort ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1) : "\u2014";
-      const effPill = effTd.createSpan({
-        cls: `smart-todo-effort is-${(_b = task.effort) != null ? _b : "unset"}`,
-        text: effLabel
-      });
-      effPill.addEventListener("click", (evt) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.showEffortMenu(evt, task);
-      });
+      if (task.effort === "light") {
+        const effPill = effTd.createSpan({
+          cls: "smart-todo-effort is-light",
+          text: EFFORT_LABEL.light
+        });
+        effPill.addEventListener("click", (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          this.showEffortMenu(evt, task);
+        });
+      } else {
+        effTd.setText("\u2014");
+      }
       const projTd = tr.createEl("td", { cls: "smart-todo-td-project" });
-      this.renderProject(projTd, task);
+      this.renderCategory(projTd, task);
     }
   }
   /** Open the source note and park the cursor on the task's line. */
@@ -1580,57 +2063,93 @@ var SmartTodoView = class extends import_obsidian4.ItemView {
     return formatDate(date);
   }
 };
-var ProjectPromptModal = class extends import_obsidian4.Modal {
-  constructor(app, current, known, onSubmit) {
+
+// src/categorize.ts
+var import_obsidian6 = require("obsidian");
+function planCategoryMigration(tasks) {
+  var _a;
+  const changes = [];
+  for (const task of tasks) {
+    const raw = (_a = task.project) == null ? void 0 : _a.trim();
+    if (!raw)
+      continue;
+    if (asCategory(raw))
+      continue;
+    const to = categoryFor(raw);
+    if (!to)
+      continue;
+    changes.push({ task, from: raw, to });
+  }
+  return changes;
+}
+function groupPlan(changes) {
+  var _a, _b;
+  const byTarget = /* @__PURE__ */ new Map();
+  for (const c of changes) {
+    const inner = (_a = byTarget.get(c.to)) != null ? _a : /* @__PURE__ */ new Map();
+    inner.set(c.from, ((_b = inner.get(c.from)) != null ? _b : 0) + 1);
+    byTarget.set(c.to, inner);
+  }
+  return CATEGORIES.filter((cat) => byTarget.has(cat)).map((cat) => ({
+    to: cat,
+    froms: Array.from(byTarget.get(cat).entries()).map(([from, count]) => ({ from, count })).sort((a, b) => b.count - a.count || a.from.localeCompare(b.from))
+  }));
+}
+var CategoryMigrationModal = class extends import_obsidian6.Modal {
+  constructor(app, changes, onApply) {
     super(app);
-    this.current = current;
-    this.known = known;
-    this.onSubmit = onSubmit;
+    this.changes = changes;
+    this.onApply = onApply;
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: "Set project" });
-    const input = contentEl.createEl("input", {
-      cls: "smart-todo-project-input",
-      attr: { type: "text", placeholder: "Project name (blank to clear)" }
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Fold projects into categories" });
+    if (this.changes.length === 0) {
+      contentEl.createDiv({
+        cls: "smart-todo-edit-hint",
+        text: "Every tagged task already uses Betaworks, Personal or Health. Nothing to do."
+      });
+      const done = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
+      const close = done.createEl("button", { cls: "mod-cta", text: "Close" });
+      close.addEventListener("click", () => this.close());
+      return;
+    }
+    contentEl.createDiv({
+      cls: "smart-todo-edit-hint",
+      text: `${this.changes.length} task${this.changes.length === 1 ? "" : "s"} will be retagged. Tasks with no project are left untouched.`
     });
-    input.value = this.current;
-    input.focus();
-    input.select();
-    const submit = () => {
-      this.onSubmit(input.value);
-      this.close();
-    };
-    input.addEventListener("keydown", (evt) => {
-      if (evt.key === "Enter") {
-        evt.preventDefault();
-        submit();
-      } else if (evt.key === "Escape") {
-        this.close();
-      }
-    });
-    if (this.known.length > 0) {
-      const chips = contentEl.createDiv({ cls: "smart-todo-project-chips" });
-      for (const name of this.known) {
-        const chip = chips.createEl("button", {
-          cls: "smart-todo-project-chip",
-          text: name
-        });
-        chip.createSpan({
-          cls: "smart-todo-project-dot",
-          attr: { style: `background:${projectColor(name)}` }
-        });
-        chip.addEventListener("click", () => {
-          input.value = name;
-          submit();
+    const list = contentEl.createDiv({ cls: "smart-todo-migrate-list" });
+    for (const group of groupPlan(this.changes)) {
+      const row = list.createDiv({ cls: "smart-todo-migrate-group" });
+      const head = row.createDiv({ cls: "smart-todo-migrate-head" });
+      head.createSpan({
+        cls: "smart-todo-project-dot",
+        attr: { style: `background:${CATEGORY_COLOR[group.to]}` }
+      });
+      head.createSpan({
+        cls: "smart-todo-migrate-target",
+        text: CATEGORY_LABEL[group.to]
+      });
+      const froms = row.createDiv({ cls: "smart-todo-migrate-froms" });
+      for (const f of group.froms) {
+        froms.createDiv({
+          cls: "smart-todo-migrate-from",
+          text: `${f.from} \u2192 ${f.count}`
         });
       }
     }
     const actions = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
-    const ok = actions.createEl("button", { cls: "mod-cta", text: "Set" });
-    ok.addEventListener("click", submit);
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close());
+    const apply = actions.createEl("button", {
+      cls: "mod-cta",
+      text: `Retag ${this.changes.length}`
+    });
+    apply.addEventListener("click", () => {
+      this.close();
+      void this.onApply();
+    });
   }
   onClose() {
     this.contentEl.empty();
@@ -1638,8 +2157,8 @@ var ProjectPromptModal = class extends import_obsidian4.Modal {
 };
 
 // src/main.ts
-var REFRESH_DEBOUNCE_MS = 1200;
-var SmartTodoPlugin = class extends import_obsidian5.Plugin {
+var REFRESH_DEBOUNCE_MS = 250;
+var SmartTodoPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -1672,12 +2191,17 @@ var SmartTodoPlugin = class extends import_obsidian5.Plugin {
       name: "Rescan tasks",
       callback: () => this.refreshViews()
     });
+    this.addCommand({
+      id: "migrate-categories",
+      name: "Fold projects into categories (Betaworks / Personal / Health)",
+      callback: () => void this.openCategoryMigration()
+    });
     this.app.workspace.onLayoutReady(() => {
       void this.ensurePrimaryFile();
     });
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian5.TFile && this.isInManagedScope(file.path)) {
+        if (file instanceof import_obsidian7.TFile && this.isInManagedScope(file.path)) {
           this.scheduleRefresh();
         }
       })
@@ -1721,7 +2245,7 @@ var SmartTodoPlugin = class extends import_obsidian5.Plugin {
       return;
     try {
       await ensureManagedFile(this.app, path);
-      new import_obsidian5.Notice(`Smart ToDo: created ${path}`, 4e3);
+      new import_obsidian7.Notice(`Smart ToDo: created ${path}`, 4e3);
     } catch (e) {
       console.error("[smart-todo] could not create managed file", path, e);
     }
@@ -1741,6 +2265,34 @@ var SmartTodoPlugin = class extends import_obsidian5.Plugin {
     if (ok)
       this.refreshViews();
     return ok;
+  }
+  /**
+   * Preview, then apply, the project → category fold.
+   *
+   * Writes run one line at a time through `setTaskProject`, sequentially: each
+   * call re-verifies the line it's replacing, and only one line changes per
+   * write, so a concurrent edit elsewhere in the file can't be clobbered and a
+   * mid-run failure leaves the earlier tasks correctly retagged.
+   */
+  async openCategoryMigration() {
+    const tasks = await this.scan();
+    const changes = planCategoryMigration(tasks);
+    new CategoryMigrationModal(this.app, changes, async () => {
+      let applied = 0;
+      for (const change of changes) {
+        const ok = await safeWrite(
+          () => setTaskProject(this.app, change.task, change.to)
+        );
+        if (!ok)
+          break;
+        applied++;
+      }
+      new import_obsidian7.Notice(
+        `Smart ToDo: retagged ${applied} of ${changes.length} task${changes.length === 1 ? "" : "s"}.`,
+        5e3
+      );
+      this.refreshViews();
+    }).open();
   }
   scheduleRefresh() {
     if (this.refreshTimer)

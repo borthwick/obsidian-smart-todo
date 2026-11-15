@@ -11,13 +11,19 @@ import {
 import { addDays, formatDate, isSameDay, startOfToday } from "./parser";
 import { describeScope } from "./scope";
 import {
+  CATEGORIES,
+  CATEGORY_COLOR,
+  CATEGORY_LABEL,
+  Category,
   EFFORTS,
+  EFFORT_LABEL,
   EFFORT_WEIGHT,
   Effort,
   Layout,
   QUADRANTS,
   QUAD_FILTERS,
   QUADRANT_COLOR,
+  QUICKIE_HEADING,
   QuadFilterId,
   Quadrant,
   SmartTask,
@@ -26,9 +32,12 @@ import {
   TABS,
   TabId,
   VIEW_TYPE_SMART_TODO,
+  asCategory,
   projectColor,
 } from "./types";
 import {
+  TaskPatch,
+  applyTaskPatch,
   pushTask,
   safeWrite,
   setTaskEffort,
@@ -36,6 +45,7 @@ import {
   setTaskProject,
   toggleTaskDone,
 } from "./writer";
+import { EditTaskModal } from "./edit-task-modal";
 import type SmartTodoPlugin from "./main";
 
 export class SmartTodoView extends ItemView {
@@ -198,8 +208,11 @@ export class SmartTodoView extends ItemView {
       btn.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.renderTabs();
-        this.renderQuadFilters();
-        this.render();
+        // Rescan, don't just repaint from memory. Switching tabs is the moment
+        // you most expect to see a task you just added — repainting a stale
+        // `this.tasks` is what made a new "tomorrow" task missing from the
+        // Tomorrow tab until something else triggered a refresh.
+        void this.refresh();
       });
     }
   }
@@ -332,11 +345,48 @@ export class SmartTodoView extends ItemView {
       this.renderMatrix(this.listEl, ordered, today);
     } else if (this.layout === "table") {
       this.renderTable(this.listEl, ordered, today);
+    } else if (this.quickiesGrouped()) {
+      this.renderGroupedCards(this.listEl, ordered, today);
     } else {
       for (const task of ordered) {
         this.renderRow(this.listEl, task, today);
       }
     }
+  }
+
+  /**
+   * Card list with light-effort tasks pulled out into their own section at the
+   * foot: "Quickies · 3 minutes or less".
+   *
+   * The real work and the five-things-you-can-knock-off-now are different
+   * decisions, and interleaving them meant the quick ones padded the list and
+   * made Today look worse than it was. Separating them also gives the batch a
+   * name — "do the quickies" is a thing you can actually act on.
+   */
+  private renderGroupedCards(
+    parent: HTMLElement,
+    tasks: SmartTask[],
+    today: Date
+  ): void {
+    const quickies = tasks.filter((t) => t.effort === "light");
+    const rest = tasks.filter((t) => t.effort !== "light");
+
+    for (const task of rest) this.renderRow(parent, task, today);
+
+    if (quickies.length === 0) return;
+
+    // Only label the section when there's something above it to distinguish
+    // it from — an all-quickies list doesn't need a header saying so.
+    if (rest.length > 0) {
+      const head = parent.createDiv({ cls: "smart-todo-group-head" });
+      head.createSpan({ cls: "smart-todo-group-title", text: QUICKIE_HEADING });
+      head.createSpan({
+        cls: "smart-todo-group-tally",
+        text: String(quickies.length),
+      });
+    }
+    const body = parent.createDiv({ cls: "smart-todo-group-body" });
+    for (const task of quickies) this.renderRow(body, task, today);
   }
 
   /**
@@ -462,8 +512,11 @@ export class SmartTodoView extends ItemView {
       cls: "smart-todo-title",
       text: task.title || "(untitled task)",
     });
-    titleEl.addEventListener("click", () => void this.revealTask(task));
-    titleEl.setAttr("title", `${task.filePath}:${task.lineNumber + 1}`);
+    // Click edits. Reaching the markdown is still one click away (the editor's
+    // "Open in note"), but editing in place is the common case and used to be
+    // the impossible one.
+    titleEl.addEventListener("click", () => this.openEditor(task));
+    titleEl.setAttr("title", "Click to edit · " + `${task.filePath}:${task.lineNumber + 1}`);
 
     const meta = main.createDiv({ cls: "smart-todo-meta" });
 
@@ -497,24 +550,26 @@ export class SmartTodoView extends ItemView {
       });
     }
 
-    // Always render an effort pill — even when unset — so effort can be set
-    // from scratch, not only retagged. An unset task has no pill to right-click,
-    // which left you with no way in. Left-click (or right-click) opens the menu.
-    const effortLabel = task.effort
-      ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1)
-      : "Effort";
-    const pill = meta.createSpan({
-      cls: `smart-todo-effort is-${task.effort ?? "unset"}`,
-      text: effortLabel,
-      attr: { "aria-label": "Set effort" },
-    });
-    const openMenu = (evt: MouseEvent): void => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      this.showEffortMenu(evt, task);
-    };
-    pill.addEventListener("click", openMenu);
-    pill.addEventListener("contextmenu", openMenu);
+    // Effort is tagged on everything but only Quickies get a pill. A
+    // Moderate/Heavy badge on every row was decoration — it never changed what
+    // you did next. "3 minutes or less" does. Moderate/Heavy are still set and
+    // changed from the editor, and still drive sort order.
+    // When quickie grouping is on, the section header already says it, so the
+    // pill would be saying it twice.
+    if (task.effort === "light" && !this.quickiesGrouped()) {
+      const pill = meta.createSpan({
+        cls: "smart-todo-effort is-light",
+        text: EFFORT_LABEL.light,
+        attr: { "aria-label": "3 minutes or less" },
+      });
+      const openMenu = (evt: MouseEvent): void => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.showEffortMenu(evt, task);
+      };
+      pill.addEventListener("click", openMenu);
+      pill.addEventListener("contextmenu", openMenu);
+    }
 
     if (task.pushes > 0) {
       const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
@@ -527,7 +582,7 @@ export class SmartTodoView extends ItemView {
       });
     }
 
-    this.renderProject(meta, task);
+    this.renderCategory(meta, task);
 
     if (task.assigned) {
       meta.createSpan({ cls: "smart-todo-assigned", text: `@${task.assigned}` });
@@ -619,38 +674,92 @@ export class SmartTodoView extends ItemView {
   }
 
   /**
-   * Project chip: a colored dot + name, or a faint "+ Project" affordance when
-   * unset. Click either to set/change — a project needs to be settable from the
-   * panel, not just from markdown.
+   * Category chip: a colored dot + name, or a faint "+ Category" affordance
+   * when unset. Click opens a three-item menu — Betaworks / Personal / Health
+   * — because the whole point of collapsing eleven free-text projects into
+   * three categories is that picking one should never need typing.
+   *
+   * A legacy, un-migrated value still renders under its own hashed color so
+   * it's visibly *not* one of the three until it's folded.
    */
-  private renderProject(parent: HTMLElement, task: SmartTask): void {
+  private renderCategory(parent: HTMLElement, task: SmartTask): void {
     const chip = parent.createSpan({ cls: "smart-todo-project" });
-    if (task.project) {
+    const canonical = asCategory(task.project);
+
+    if (canonical) {
+      chip.createSpan({
+        cls: "smart-todo-project-dot",
+        attr: { style: `background:${CATEGORY_COLOR[canonical]}` },
+      });
+      chip.createSpan({
+        cls: "smart-todo-project-name",
+        text: CATEGORY_LABEL[canonical],
+      });
+    } else if (task.project) {
+      chip.addClass("is-legacy");
       chip.createSpan({
         cls: "smart-todo-project-dot",
         attr: { style: `background:${projectColor(task.project)}` },
       });
       chip.createSpan({ cls: "smart-todo-project-name", text: task.project });
+      chip.setAttr("aria-label", "Not one of the three categories — click to set");
     } else {
       chip.addClass("is-unset");
-      chip.setText("+ Project");
+      chip.setText("+ Category");
     }
+
     chip.addEventListener("click", (evt) => {
+      evt.preventDefault();
       evt.stopPropagation();
-      this.promptProject(task);
+      this.showCategoryMenu(evt as MouseEvent, task);
     });
   }
 
-  private promptProject(task: SmartTask): void {
-    const known = Array.from(
-      new Set(this.tasks.map((t) => t.project).filter((p): p is string => !!p))
-    ).sort();
-    new ProjectPromptModal(this.app, task.project ?? "", known, async (value) => {
-      await safeWrite(() =>
-        setTaskProject(this.app, task, value.trim() || null)
+  private showCategoryMenu(evt: MouseEvent, task: SmartTask): void {
+    const current = asCategory(task.project);
+    const menu = new Menu();
+    for (const cat of CATEGORIES) {
+      menu.addItem((item) =>
+        item
+          .setTitle(CATEGORY_LABEL[cat])
+          .setChecked(current === cat)
+          .onClick(async () => {
+            await safeWrite(() => setTaskProject(this.app, task, cat as Category));
+            await this.refresh();
+          })
       );
-      await this.refresh();
-    }).open();
+    }
+    menu.addSeparator();
+    menu.addItem((item) =>
+      item.setTitle("Clear category").onClick(async () => {
+        await safeWrite(() => setTaskProject(this.app, task, null));
+        await this.refresh();
+      })
+    );
+    menu.showAtMouseEvent(evt);
+  }
+
+  /** Open the full editor for a task and write back whatever changed. */
+  private openEditor(task: SmartTask): void {
+    new EditTaskModal(
+      this.app,
+      task,
+      async (patch: TaskPatch) => {
+        if (Object.keys(patch).length === 0) return;
+        await safeWrite(() => applyTaskPatch(this.app, task, patch));
+        await this.refresh();
+      },
+      () => void this.revealTask(task)
+    ).open();
+  }
+
+  /** Is the Quickies section active for the current layout? */
+  private quickiesGrouped(): boolean {
+    return (
+      this.plugin.settings.groupQuickies &&
+      this.layout === "card" &&
+      !this.matrixView
+    );
   }
 
   /** Onda-style table: sortable headers + one row per task. */
@@ -716,7 +825,7 @@ export class SmartTodoView extends ItemView {
         cls: "smart-todo-title",
         text: task.title || "(untitled task)",
       });
-      titleSpan.addEventListener("click", () => void this.revealTask(task));
+      titleSpan.addEventListener("click", () => this.openEditor(task));
 
       // Priority: importance star + quadrant pill
       const quadTd = tr.createEl("td", { cls: "smart-todo-td-quadrant" });
@@ -751,24 +860,27 @@ export class SmartTodoView extends ItemView {
         pushTd.setText("—");
       }
 
-      // Effort
+      // Effort — Quickie only, same rule as the card rows. The column stays so
+      // the table can still be sorted by effort, it just doesn't print a badge
+      // for Moderate/Heavy.
       const effTd = tr.createEl("td", { cls: "smart-todo-td-effort" });
-      const effLabel = task.effort
-        ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1)
-        : "—";
-      const effPill = effTd.createSpan({
-        cls: `smart-todo-effort is-${task.effort ?? "unset"}`,
-        text: effLabel,
-      });
-      effPill.addEventListener("click", (evt) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.showEffortMenu(evt, task);
-      });
+      if (task.effort === "light") {
+        const effPill = effTd.createSpan({
+          cls: "smart-todo-effort is-light",
+          text: EFFORT_LABEL.light,
+        });
+        effPill.addEventListener("click", (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          this.showEffortMenu(evt, task);
+        });
+      } else {
+        effTd.setText("—");
+      }
 
-      // Project
+      // Category
       const projTd = tr.createEl("td", { cls: "smart-todo-td-project" });
-      this.renderProject(projTd, task);
+      this.renderCategory(projTd, task);
     }
   }
 
@@ -792,75 +904,5 @@ export class SmartTodoView extends ItemView {
       return date.toLocaleDateString(undefined, { weekday: "short" });
     }
     return formatDate(date);
-  }
-}
-
-/**
- * Minimal project picker: a text field prefilled with the current value, plus
- * one-click chips for projects already used elsewhere in scope so you reuse
- * names instead of spawning near-duplicates.
- */
-class ProjectPromptModal extends Modal {
-  constructor(
-    app: import("obsidian").App,
-    private current: string,
-    private known: string[],
-    private onSubmit: (value: string) => void
-  ) {
-    super(app);
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.createEl("h3", { text: "Set project" });
-
-    const input = contentEl.createEl("input", {
-      cls: "smart-todo-project-input",
-      attr: { type: "text", placeholder: "Project name (blank to clear)" },
-    }) as HTMLInputElement;
-    input.value = this.current;
-    input.focus();
-    input.select();
-
-    const submit = (): void => {
-      this.onSubmit(input.value);
-      this.close();
-    };
-    input.addEventListener("keydown", (evt) => {
-      if (evt.key === "Enter") {
-        evt.preventDefault();
-        submit();
-      } else if (evt.key === "Escape") {
-        this.close();
-      }
-    });
-
-    if (this.known.length > 0) {
-      const chips = contentEl.createDiv({ cls: "smart-todo-project-chips" });
-      for (const name of this.known) {
-        const chip = chips.createEl("button", {
-          cls: "smart-todo-project-chip",
-          text: name,
-        });
-        chip.createSpan({
-          cls: "smart-todo-project-dot",
-          attr: { style: `background:${projectColor(name)}` },
-        });
-        chip.addEventListener("click", () => {
-          input.value = name;
-          submit();
-        });
-      }
-    }
-
-    const actions = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
-    const ok = actions.createEl("button", { cls: "mod-cta", text: "Set" });
-    ok.addEventListener("click", submit);
-    const cancel = actions.createEl("button", { text: "Cancel" });
-    cancel.addEventListener("click", () => this.close());
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
   }
 }

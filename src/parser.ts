@@ -23,10 +23,24 @@ export const DONE_DATE_RE = /✅\s*(\d{4}-\d{2}-\d{2})/;
 export const INLINE_FIELD_RE = /\[([A-Za-z][\w-]*)\s*::\s*([^\]]*)\]/g;
 
 /** Emoji-date tokens, stripped wholesale when deriving the title. */
-const EMOJI_DATE_TOKEN_RE = /(?:📅|⏳|✅|🛫|➕|❌|🔁)\s*\d{4}-\d{2}-\d{2}/g;
+const EMOJI_DATE_TOKEN_RE = /(?:📅|⏳|✅|🛫|➕|❌)\s*\d{4}-\d{2}-\d{2}/g;
 
-/** Tasks-plugin priority emoji — not modelled yet, but shouldn't pollute titles. */
-const PRIORITY_EMOJI_RE = /[🔺⏫🔼🔽⏬]/g;
+/**
+ * A 🔁 recurrence rule is free text ("every week"), not a date, so it needs
+ * its own stripper — otherwise the emoji goes and the words stay in the title.
+ * Runs to the next token or end of line.
+ */
+const RECURRENCE_TOKEN_RE = /🔁[^[\]📅⏳✅🛫➕❌🔺⏫🔼🔽⏬]*/gu;
+
+/**
+ * Tasks-plugin priority emoji — not modelled yet, but shouldn't pollute titles.
+ *
+ * The `u` flag is load-bearing: without it this class is read as surrogate
+ * *code units* and silently contains the bare lead surrogate `\ud83d`, so it
+ * matches the first half of 🔁 (and most other emoji) and leaves mojibake
+ * behind in the title.
+ */
+const PRIORITY_EMOJI_RE = /[🔺⏫🔼🔽⏬]/gu;
 
 /**
  * Parse `YYYY-MM-DD` as *local* midnight.
@@ -110,6 +124,7 @@ export function deriveTitle(body: string): string {
   return body
     .replace(new RegExp(INLINE_FIELD_RE.source, "g"), "")
     .replace(EMOJI_DATE_TOKEN_RE, "")
+    .replace(RECURRENCE_TOKEN_RE, "")
     .replace(PRIORITY_EMOJI_RE, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -172,9 +187,11 @@ export function parseTasksFromContent(content: string, filePath: string): SmartT
 /**
  * Scan the managed scope only — never the whole vault.
  *
- * `cachedRead` is the right call here: it's the read path Obsidian optimizes
- * for bulk display reads (writes go through vault.process). Scope filtering
- * happens before any read, so out-of-scope notes are never even opened.
+ * Reads go through `vault.read`, not `cachedRead`. `cachedRead` returns the
+ * last-indexed copy, which lags a write by a tick — that's what made a
+ * just-captured task land in the file but miss the next repaint, so it only
+ * showed up on a later refresh. Scope is a handful of files by construction,
+ * so the uncached read costs nothing and the panel is never behind the file.
  */
 export async function scanScope(app: App, scope: ManagedScope): Promise<SmartTask[]> {
   const files = app.vault
@@ -184,7 +201,7 @@ export async function scanScope(app: App, scope: ManagedScope): Promise<SmartTas
   for (const file of files) {
     let content: string;
     try {
-      content = await app.vault.cachedRead(file);
+      content = await app.vault.read(file);
     } catch (e) {
       continue; // unreadable file shouldn't sink the whole scan
     }

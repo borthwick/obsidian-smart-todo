@@ -19,6 +19,20 @@ export const EFFORT_WEIGHT: Record<Effort, number> = {
   light: 1,
 };
 
+/**
+ * Effort is tagged on every task but only *light* earns screen space: a
+ * "3 minutes or less" marker is actionable (you can clear five of them while
+ * the kettle boils), whereas a Moderate/Heavy pill on every row is noise you
+ * already knew. Moderate/Heavy still sort and still show in the editor.
+ */
+export const EFFORT_LABEL: Record<Effort, string> = {
+  light: "Quickie",
+  moderate: "Moderate",
+  heavy: "Heavy",
+};
+
+export const QUICKIE_HEADING = "Quickies · 3 minutes or less";
+
 export interface SmartTask {
   /** Vault-relative path of the file the line lives in. */
   filePath: string;
@@ -119,6 +133,12 @@ export interface SmartTodoSettings {
   pushesWarnThreshold: number;
   /** "card" (stacked rows) or "table" (Onda-style sortable columns). */
   defaultLayout: Layout;
+  /**
+   * Collect light-effort tasks into their own "Quickies" group at the foot of
+   * the list instead of interleaving them. Effort is still tagged on every
+   * task; this is purely about what the panel shows.
+   */
+  groupQuickies: boolean;
 }
 
 export type Layout = "card" | "table";
@@ -130,7 +150,81 @@ export const DEFAULT_SETTINGS: SmartTodoSettings = {
   managedFiles: DEFAULT_MANAGED_FILE,
   pushesWarnThreshold: 3,
   defaultLayout: "card",
+  groupQuickies: true,
 };
+
+// --- Categories ----------------------------------------------------------
+//
+// Projects used to be free text, which meant 11 near-synonymous buckets
+// (Investing / Betaworks / Finance / Home / Family / Relationships…) and no
+// way to scan the list by life-area. John's call: exactly three categories.
+// They're stored in the same `[project:: …]` field so Dataview/Tasks queries
+// and old lines keep working — the constraint is in the UI, not the format.
+
+export type Category = "betaworks" | "personal" | "health";
+
+export const CATEGORIES: Category[] = ["betaworks", "personal", "health"];
+
+export const CATEGORY_LABEL: Record<Category, string> = {
+  betaworks: "Betaworks",
+  personal: "Personal",
+  health: "Health",
+};
+
+export const CATEGORY_COLOR: Record<Category, string> = {
+  betaworks: "hsl(212, 70%, 55%)", // blue — work
+  personal: "hsl(150, 50%, 46%)", // green — life
+  health: "hsl(28, 80%, 55%)", // amber — body
+};
+
+/**
+ * Fold a legacy free-text project onto one of the three categories.
+ *
+ * Deliberately total: anything unrecognised lands in `personal`, because an
+ * unmapped value is almost always a life bucket, and leaving it unmapped
+ * would quietly recreate the sprawl this replaces. The migration preview
+ * shows every change before it's written, so a wrong guess is one click to fix.
+ */
+export const CATEGORY_ALIASES: Record<string, Category> = {
+  betaworks: "betaworks",
+  investing: "betaworks",
+  investment: "betaworks",
+  portfolio: "betaworks",
+  deals: "betaworks",
+  work: "betaworks",
+  research: "betaworks",
+  camp: "betaworks",
+  lp: "betaworks",
+  health: "health",
+  fitness: "health",
+  medical: "health",
+  doctor: "health",
+  personal: "personal",
+  family: "personal",
+  home: "personal",
+  relationships: "personal",
+  reading: "personal",
+  finance: "personal",
+  money: "personal",
+  admin: "personal",
+  botwick: "personal",
+  "smart todo": "personal",
+};
+
+/** Exact match on an already-canonical value, else null. */
+export function asCategory(raw: string | null | undefined): Category | null {
+  if (!raw) return null;
+  const v = raw.trim().toLowerCase();
+  return (CATEGORIES as string[]).includes(v) ? (v as Category) : null;
+}
+
+/** Best-effort fold of any project string onto a category. */
+export function categoryFor(raw: string | null | undefined): Category | null {
+  if (!raw) return null;
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+  return asCategory(v) ?? CATEGORY_ALIASES[v] ?? "personal";
+}
 
 export type TabId =
   | "today"

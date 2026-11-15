@@ -134,5 +134,44 @@ export class SmartTodoSettingTab extends PluginSettingTab {
             }
           })
       );
+
+    new Setting(el)
+      .setName("Group Quickies")
+      .setDesc(
+        "Collect light-effort tasks into a \"Quickies · 3 minutes or less\" " +
+          "section at the foot of the list. Effort is still tagged on every " +
+          "task either way — this only changes what the panel shows."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.groupQuickies)
+          .onChange(async (value) => {
+            this.plugin.settings.groupQuickies = value;
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          })
+      );
+
+    el.createEl("h3", { text: "Categories" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Tasks carry one of three categories — Betaworks, Personal, Health — " +
+        "stored in the same [project:: …] field, so Dataview and Tasks " +
+        "queries keep working. Imported tasks with older project names can be " +
+        "folded onto the three in one pass; you'll see every change first.",
+    });
+
+    new Setting(el)
+      .setName("Fold projects into categories")
+      .setDesc(
+        "Previews the retag, then applies it one line at a time. Tasks with " +
+          "no project are left alone."
+      )
+      .addButton((btn) =>
+        btn
+          .setButtonText("Review changes")
+          .onClick(() => void this.plugin.openCategoryMigration())
+      );
   }
 }

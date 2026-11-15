@@ -17,12 +17,19 @@ import {
   SmartTodoSettings,
   VIEW_TYPE_SMART_TODO,
 } from "./types";
-import { appendTask, ensureManagedFile, safeWrite } from "./writer";
+import { appendTask, ensureManagedFile, safeWrite, setTaskProject } from "./writer";
 import { buildCaptureBody } from "./nlparse";
 import { SmartTodoView } from "./view";
+import { CategoryMigrationModal, planCategoryMigration } from "./categorize";
 
-/** Coalesce bursty vault events (Sync landing a batch) into one rescan. */
-const REFRESH_DEBOUNCE_MS = 1200;
+/**
+ * Coalesce bursty vault events (Sync landing a batch) into one rescan.
+ *
+ * Short on purpose. Every write path already refreshes synchronously, so this
+ * only covers edits made *outside* the panel — and a second of lag there read
+ * as "the panel is stale", which is the one thing a task list can't be.
+ */
+const REFRESH_DEBOUNCE_MS = 250;
 
 export default class SmartTodoPlugin extends Plugin {
   settings: SmartTodoSettings = DEFAULT_SETTINGS;
@@ -63,6 +70,12 @@ export default class SmartTodoPlugin extends Plugin {
       id: "refresh-tasks",
       name: "Rescan tasks",
       callback: () => this.refreshViews(),
+    });
+
+    this.addCommand({
+      id: "migrate-categories",
+      name: "Fold projects into categories (Betaworks / Personal / Health)",
+      callback: () => void this.openCategoryMigration(),
     });
 
     // Create the managed file after the vault has finished indexing —
@@ -144,6 +157,36 @@ export default class SmartTodoPlugin extends Plugin {
     const ok = await safeWrite(() => appendTask(this.app, this.primaryFile, body));
     if (ok) this.refreshViews();
     return ok;
+  }
+
+  /**
+   * Preview, then apply, the project → category fold.
+   *
+   * Writes run one line at a time through `setTaskProject`, sequentially: each
+   * call re-verifies the line it's replacing, and only one line changes per
+   * write, so a concurrent edit elsewhere in the file can't be clobbered and a
+   * mid-run failure leaves the earlier tasks correctly retagged.
+   */
+  async openCategoryMigration(): Promise<void> {
+    const tasks = await this.scan();
+    const changes = planCategoryMigration(tasks);
+    new CategoryMigrationModal(this.app, changes, async () => {
+      let applied = 0;
+      for (const change of changes) {
+        const ok = await safeWrite(() =>
+          setTaskProject(this.app, change.task, change.to)
+        );
+        if (!ok) break;
+        applied++;
+      }
+      new Notice(
+        `Smart ToDo: retagged ${applied} of ${changes.length} task${
+          changes.length === 1 ? "" : "s"
+        }.`,
+        5000
+      );
+      this.refreshViews();
+    }).open();
   }
 
   private scheduleRefresh(): void {

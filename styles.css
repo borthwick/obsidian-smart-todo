@@ -675,3 +675,175 @@
   gap: var(--size-2-2);
   white-space: nowrap;
 }
+
+/* ===================================================================== */
+/* 0.7.0 — task editor, three categories, Quickies group                 */
+/* ===================================================================== */
+
+/* A legacy project value that hasn't been folded into one of the three
+   categories yet: dashed outline so it reads as "needs a decision", not as a
+   fourth category. */
+.smart-todo-project.is-legacy {
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 0 var(--size-2-2);
+  opacity: 0.85;
+}
+
+/* --- Quickies group -------------------------------------------------- */
+
+.smart-todo-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  margin: var(--size-4-3) 0 var(--size-2-1);
+  padding-top: var(--size-2-2);
+  border-top: 1px solid var(--background-modifier-border);
+}
+.smart-todo-group-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.smart-todo-group-tally {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+/* Quickies read as a batch, not as peers of the real work. */
+.smart-todo-group-body .smart-todo-row {
+  padding-top: var(--size-2-1);
+  padding-bottom: var(--size-2-1);
+}
+.smart-todo-group-body .smart-todo-title {
+  color: var(--text-muted);
+}
+
+/* --- Task editor modal ---------------------------------------------- */
+
+.smart-todo-edit-modal {
+  max-width: 480px;
+}
+.smart-todo-edit-field {
+  margin-bottom: var(--size-4-3);
+}
+.smart-todo-edit-label {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: var(--size-2-2);
+}
+.smart-todo-edit-input,
+.smart-todo-edit-date {
+  width: 100%;
+}
+.smart-todo-edit-hint {
+  margin-top: var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  color: var(--text-faint);
+}
+
+/* Segmented control: the three categories, the importance call, effort.
+   Buttons rather than a dropdown — every option is visible, so setting a
+   field is one click with no hidden state. */
+.smart-todo-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+}
+.smart-todo-seg-btn {
+  padding: var(--size-2-2) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.smart-todo-seg-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.smart-todo-seg-btn.is-active {
+  border-color: var(--cat-color, var(--interactive-accent));
+  box-shadow: inset 0 0 0 1px var(--cat-color, var(--interactive-accent));
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+.smart-todo-seg-btn.is-clear.is-active {
+  --cat-color: var(--text-faint);
+}
+
+.smart-todo-quickdates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+  margin-top: var(--size-2-2);
+}
+.smart-todo-quickdate {
+  padding: var(--size-2-1) var(--size-2-3);
+  font-size: var(--font-ui-smaller);
+  border: none;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.smart-todo-quickdate:hover {
+  color: var(--text-normal);
+}
+
+.smart-todo-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  margin-top: var(--size-4-4);
+}
+.smart-todo-modal-spacer {
+  flex: 1;
+}
+.smart-todo-edit-reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  font-size: var(--font-ui-smaller);
+}
+.smart-todo-edit-reveal-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* --- Category migration preview ------------------------------------- */
+
+.smart-todo-migrate-list {
+  margin: var(--size-4-3) 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.smart-todo-migrate-group {
+  padding: var(--size-2-3) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.smart-todo-migrate-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+}
+.smart-todo-migrate-target {
+  font-weight: var(--font-semibold);
+}
+.smart-todo-migrate-froms {
+  margin-top: var(--size-2-2);
+  padding-left: var(--size-4-4);
+}
+.smart-todo-migrate-from {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
