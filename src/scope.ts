@@ -10,6 +10,80 @@ import {
   SmartTask,
 } from "./types";
 
+// --- Calendar tokens in scope paths --------------------------------------
+//
+// One note in the scope has a path that moves: the weekly page. Everything
+// else is tracked once and stays put, but `Week 48 of 2026.md` becomes a
+// different file every Monday. Tracking it by hand means re-tracking weekly
+// and remembering to drop the old one — and the failure when you forget is
+// silent and bad: the panel keeps showing last week's priorities as though
+// they were this week's.
+
+/**
+ * Week number for a date, under a Sunday- or Monday-start convention.
+ *
+ * Monday-start is ISO-8601 (week 1 contains the first Thursday). Sunday-start
+ * is the US convention: week 1 is the week containing Jan 1.
+ *
+ * The default is Sunday because that's what John's vault does — the page he
+ * wrote on Sunday 22 Nov 2026 for the week ahead is `Week 48 of 2026`, where
+ * ISO-8601 calls that date week 47. Getting this wrong points the panel at an
+ * adjacent week's page, which looks like the feature simply not working.
+ */
+export function weekNumber(date: Date, weekStart: "sunday" | "monday" = "sunday"): number {
+  if (weekStart === "monday") {
+    // ISO-8601: shift to the Thursday of this week, then count weeks from the
+    // first Thursday of that Thursday's year.
+    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const dow = (d.getDay() + 6) % 7; // Mon=0 … Sun=6
+    d.setDate(d.getDate() - dow + 3);
+    const firstThursday = new Date(d.getFullYear(), 0, 4);
+    const fdow = (firstThursday.getDay() + 6) % 7;
+    firstThursday.setDate(firstThursday.getDate() - fdow + 3);
+    return 1 + Math.round((d.getTime() - firstThursday.getTime()) / (7 * 86400000));
+  }
+  // Sunday-start: how many Sunday boundaries since the Sunday on or before Jan 1.
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const jan1 = new Date(d.getFullYear(), 0, 1);
+  const weekOneStart = new Date(jan1);
+  weekOneStart.setDate(jan1.getDate() - jan1.getDay());
+  return 1 + Math.floor((d.getTime() - weekOneStart.getTime()) / (7 * 86400000));
+}
+
+/**
+ * The calendar year a week number belongs to.
+ *
+ * In ISO-8601 the last days of December can fall in week 1 of the next year
+ * (and vice versa), so `{{year}}` has to agree with `{{week}}` or the pattern
+ * resolves to a file that doesn't exist for a few days each January.
+ */
+export function weekYear(date: Date, weekStart: "sunday" | "monday" = "sunday"): number {
+  if (weekStart !== "monday") return date.getFullYear();
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dow = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - dow + 3); // the Thursday owns the week
+  return d.getFullYear();
+}
+
+/**
+ * Replace `{{week}}`, `{{week:02}}` and `{{year}}` in a scope path.
+ *
+ * Left alone when the path has no tokens, so this is free for every other
+ * entry and can't surprise anyone who isn't using it.
+ */
+export function expandPathTokens(
+  path: string,
+  today: Date = new Date(),
+  weekStart: "sunday" | "monday" = "sunday"
+): string {
+  if (!path.includes("{{")) return path;
+  const week = weekNumber(today, weekStart);
+  return path
+    .replace(/\{\{week:02\}\}/gi, String(week).padStart(2, "0"))
+    .replace(/\{\{week\}\}/gi, String(week))
+    .replace(/\{\{year\}\}/gi, String(weekYear(today, weekStart)));
+}
+
 /** Strip surrounding whitespace, quotes, and leading/trailing slashes. */
 function normalizePath(raw: string): string {
   return raw
@@ -44,11 +118,18 @@ export function samePath(a: string | null | undefined, b: string | null | undefi
  * the default file rather than the whole vault — opening up to 3,000 stray
  * checkboxes should never be the accidental state.
  */
-export function parseScope(raw: string | undefined | null): ManagedScope {
+export function parseScope(
+  raw: string | undefined | null,
+  options: { today?: Date; weekStart?: "sunday" | "monday"; expandTokens?: boolean } = {}
+): ManagedScope {
+  const { today = new Date(), weekStart = "sunday", expandTokens = true } = options;
   const parts = (raw ?? "")
     .split(/[,\n]/)
     .map(normalizePath)
-    .filter((p) => p.length > 0);
+    .map((p) => (expandTokens ? expandPathTokens(p, today, weekStart) : p))
+    // A leftover `{{…}}` means the user typed a token we don't expand. Drop
+    // the entry rather than scanning for a literal file with braces in its name.
+    .filter((p) => p.length > 0 && !p.includes("{{"));
 
   const seen = new Set<string>();
   const entries: ScopeEntry[] = [];
@@ -128,10 +209,26 @@ function rawEntries(raw: string | undefined | null): string[] {
   return (raw ?? "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
 }
 
-/** Is this exact path already named in the raw setting? */
-export function scopeIncludesPath(raw: string | undefined | null, path: string): boolean {
+/**
+ * Is this path already named in the raw setting?
+ *
+ * Compares against each entry *expanded*, so the week page matches the
+ * `{{week}}` pattern that produced it. Without this, right-clicking the live
+ * week page would offer "track" on a note already in scope, and the toggle
+ * would append a second, frozen copy of today's path.
+ */
+export function scopeIncludesPath(
+  raw: string | undefined | null,
+  path: string,
+  options: { today?: Date; weekStart?: "sunday" | "monday" } = {}
+): boolean {
+  const { today = new Date(), weekStart = "sunday" } = options;
   const needle = normalizePath(path).toLowerCase();
-  return rawEntries(raw).some((p) => p.toLowerCase() === needle);
+  return rawEntries(raw).some(
+    (p) =>
+      p.toLowerCase() === needle ||
+      expandPathTokens(p, today, weekStart).toLowerCase() === needle
+  );
 }
 
 /**
@@ -149,10 +246,25 @@ export function addPathToScope(raw: string | undefined | null, path: string): st
   return existing.includes("\n") ? `${existing}\n${clean}` : `${existing}, ${clean}`;
 }
 
-/** Remove `path` from the scope, leaving every other entry as written. */
-export function removePathFromScope(raw: string | undefined | null, path: string): string {
+/**
+ * Remove `path` from the scope, leaving every other entry as written.
+ *
+ * Matches a token pattern by its expansion too — "stop tracking this note" on
+ * the live week page has to remove the `{{week}}` entry that put it there, or
+ * the command appears to do nothing and the page is back next repaint.
+ */
+export function removePathFromScope(
+  raw: string | undefined | null,
+  path: string,
+  options: { today?: Date; weekStart?: "sunday" | "monday" } = {}
+): string {
+  const { today = new Date(), weekStart = "sunday" } = options;
   const needle = normalizePath(path).toLowerCase();
-  const kept = rawEntries(raw).filter((p) => p.toLowerCase() !== needle);
+  const kept = rawEntries(raw).filter(
+    (p) =>
+      p.toLowerCase() !== needle &&
+      expandPathTokens(p, today, weekStart).toLowerCase() !== needle
+  );
   return (raw ?? "").includes("\n") ? kept.join("\n") : kept.join(", ");
 }
 

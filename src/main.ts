@@ -19,6 +19,7 @@ import {
 import { SmartTodoSettingTab } from "./settings";
 import { AddTaskModal } from "./add-task-modal";
 import {
+  DEFAULT_IMPORTANT_HEADINGS,
   DEFAULT_SETTINGS,
   ManagedScope,
   SmartTask,
@@ -127,7 +128,7 @@ export default class SmartTodoPlugin extends Plugin {
         // Never offer to untrack the capture target: the panel has nowhere to
         // put a new task without it.
         if (samePath(file.path, this.primaryFile)) return;
-        const tracked = scopeIncludesPath(this.settings.managedFiles, file.path);
+        const tracked = scopeIncludesPath(this.settings.managedFiles, file.path, this.scopeOptions);
         menu.addItem((item) =>
           item
             .setTitle(tracked ? "Smart ToDo: stop tracking tasks here" : "Smart ToDo: track tasks in this note")
@@ -212,9 +213,9 @@ export default class SmartTodoPlugin extends Plugin {
       return;
     }
 
-    const tracked = scopeIncludesPath(this.settings.managedFiles, path);
+    const tracked = scopeIncludesPath(this.settings.managedFiles, path, this.scopeOptions);
     this.settings.managedFiles = tracked
-      ? removePathFromScope(this.settings.managedFiles, path)
+      ? removePathFromScope(this.settings.managedFiles, path, this.scopeOptions)
       : addPathToScope(this.settings.managedFiles, path);
     await this.saveSettings();
     this.refreshViews();
@@ -255,9 +256,22 @@ export default class SmartTodoPlugin extends Plugin {
     );
   }
 
+  /**
+   * Options shared by every scope call, so a `{{week}}` entry resolves to the
+   * same file wherever it's asked about. Threaded explicitly rather than read
+   * from a module global: two call sites disagreeing about the week start is
+   * exactly the bug that makes track/untrack silently no-op.
+   */
+  private get scopeOptions(): { weekStart: "sunday" | "monday"; expandTokens: boolean } {
+    return {
+      weekStart: this.settings.weekStart ?? "sunday",
+      expandTokens: this.settings.weekTokensEnabled !== false,
+    };
+  }
+
   /** The managed scope as currently configured. */
   get scope(): ManagedScope {
-    return parseScope(this.settings.managedFiles);
+    return parseScope(this.settings.managedFiles, this.scopeOptions);
   }
 
   isInManagedScope(path: string): boolean {
@@ -301,7 +315,9 @@ export default class SmartTodoPlugin extends Plugin {
   }
 
   async scan(): Promise<SmartTask[]> {
-    return scanScope(this.app, this.scope);
+    return scanScope(this.app, this.scope, {
+      importantHeadings: this.settings.importantHeadings ?? DEFAULT_IMPORTANT_HEADINGS,
+    });
   }
 
   /** Create the managed file if it's missing, so capture always has a target. */

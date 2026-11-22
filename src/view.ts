@@ -26,8 +26,10 @@ import {
   estimateMinutes,
   fitsBudget,
   formatDuration,
+  groupByHeading,
   groupBySource,
   groupByQuadrant,
+  isContainer,
   isResting,
   isUnjudged,
   matchesCategory,
@@ -54,6 +56,7 @@ import {
   HORIZONS,
   Horizon,
   MODES,
+  PRIORITY_MARK,
   QUADRANTS,
   QUADRANT_COLOR,
   QUADRANT_ORDER,
@@ -838,7 +841,7 @@ export class SmartTodoView extends ItemView {
   private renderFocus(tasks: SmartTask[], today: Date): void {
     const split = groupBySource(tasks, (p) => this.isHomeFile(p));
     const grouped = groupByQuadrant(split.main, today);
-    const quickies = tasks.filter((t) => t.effort === "light");
+    const quickies = tasks.filter((t) => t.effort === "light" && !isContainer(t));
     let bannerPlaced = false;
 
     for (const q of QUADRANT_ORDER) {
@@ -967,9 +970,58 @@ export class SmartTodoView extends ItemView {
     });
 
     if (collapsed) return;
-    for (const task of group.tasks) {
-      this.renderRow(this.bodyEl, task, today, { hideSource: true });
+
+    // Inside the note, split again by the heading each task sits under. On a
+    // page like the weekly one that heading is most of the meaning — "Focus
+    // this week", "Fund 4.0 Prep", "2025 Taxes" are three different kinds of
+    // commitment, and flattened into one run of rows they read as a pile.
+    if (!this.plugin.settings.groupByHeading) {
+      for (const task of group.tasks) this.renderTree(group.tasks, task, today);
+      return;
     }
+
+    const sections = groupByHeading(group.tasks);
+    for (const section of sections) {
+      // A single unheaded preamble section would just be an empty label.
+      if (section.heading && sections.length > 1) {
+        const sub = this.bodyEl.createDiv({ cls: "stw-heading-head" });
+        sub.createSpan({ cls: "stw-heading-title", text: section.heading });
+        sub.createSpan({ cls: "stw-heading-tally", text: String(section.tasks.length) });
+      }
+      for (const task of section.tasks) this.renderTree(section.tasks, task, today);
+    }
+  }
+
+  /**
+   * Render a task at its nesting depth, but only once.
+   *
+   * `parseTasksFromContent` returns a flat list with `parentLine` pointing up,
+   * so the tree is already there — this just skips any task whose parent is in
+   * the same visible set (the parent's own call renders it) and indents the
+   * rest. The alternative, rendering children as peers, loses the one thing the
+   * indentation on the page was saying: *this is how that gets done*.
+   */
+  private renderTree(siblings: SmartTask[], task: SmartTask, today: Date): void {
+    const depth = this.visibleDepth(siblings, task);
+    if (depth < 0) return;
+    this.renderRow(this.bodyEl, task, today, { hideSource: true, depth });
+  }
+
+  /** Indent level relative to the shallowest visible ancestor chain, or -1. */
+  private visibleDepth(siblings: SmartTask[], task: SmartTask): number {
+    let depth = 0;
+    let current = task;
+    // Walk up while the parent is also on screen; cap the walk so a malformed
+    // chain can't spin.
+    for (let i = 0; i < 8; i++) {
+      const parent = siblings.find(
+        (s) => s.filePath === current.filePath && s.lineNumber === current.parentLine
+      );
+      if (!parent) break;
+      depth++;
+      current = parent;
+    }
+    return Math.min(depth, 3);
   }
 
   private async toggleSource(path: string): Promise<void> {
@@ -1070,7 +1122,7 @@ export class SmartTodoView extends ItemView {
 
   /** Sweep mode: the queue, previewed, with one button that starts the clock. */
   private renderSweep(tasks: SmartTask[], today: Date): void {
-    const queue = tasks.filter((t) => t.effort === "light");
+    const queue = tasks.filter((t) => t.effort === "light" && !isContainer(t));
 
     const head = this.bodyEl.createDiv({ cls: "stw-sweep-intro" });
     head.createDiv({
@@ -1110,7 +1162,7 @@ export class SmartTodoView extends ItemView {
    * be the Betaworks quick wins, not every loose end you own.
    */
   sweepNow(): boolean {
-    const queue = this.visibleTasks().filter((t) => t.effort === "light");
+    const queue = this.visibleTasks().filter((t) => t.effort === "light" && !isContainer(t));
     if (queue.length === 0) return false;
     this.startSweep(queue);
     return true;
@@ -1167,9 +1219,14 @@ export class SmartTodoView extends ItemView {
     parent: HTMLElement,
     task: SmartTask,
     today: Date,
-    opts: { hideSource?: boolean } = {}
+    opts: { hideSource?: boolean; depth?: number } = {}
   ): void {
     const row = parent.createDiv({ cls: "stw-row-task" });
+    if (opts.depth) {
+      row.addClass("is-child");
+      row.style.setProperty("--stw-depth", String(opts.depth));
+    }
+    if (isContainer(task)) row.addClass("is-container");
     if (task.status === "done") row.addClass("is-done");
     if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
       row.addClass("is-overdue");
@@ -1199,6 +1256,46 @@ export class SmartTodoView extends ItemView {
     titleEl.setAttr("title", `Click to edit · ${task.filePath}:${task.lineNumber + 1}`);
 
     const meta = main.createDiv({ cls: "stw-task-meta" });
+
+    // A container's own count, so a folded-looking parent still says how much
+    // is under it.
+    if (isContainer(task)) {
+      meta.createSpan({
+        cls: "stw-subcount",
+        text: `${task.openChildren} open`,
+        attr: { "aria-label": "This has sub-tasks — the work is in those" },
+      });
+    }
+
+    // Why this task counts as important, when the panel inferred it rather
+    // than being told. A list that silently reclassifies your work is one you
+    // stop trusting, so the inference shows its source.
+    if (task.important === true && task.importantFrom && task.importantFrom !== "field") {
+      const from = task.importantFrom;
+      meta.createSpan({
+        cls: "stw-why",
+        text:
+          from === "priority"
+            ? PRIORITY_MARK[task.priority ?? "medium"]
+            : from === "heading"
+              ? "§"
+              : "↳",
+        attr: {
+          "aria-label":
+            from === "priority"
+              ? `Important: priority ${task.priority} on the line`
+              : from === "heading"
+                ? `Important: under "${task.heading}"`
+                : "Important: inherited from the task above",
+          title:
+            from === "priority"
+              ? `Marked ${task.priority} priority in the note`
+              : from === "heading"
+                ? `Under the heading "${task.heading}"`
+                : "Inherited from its parent task",
+        },
+      });
+    }
 
     this.renderCategoryChip(meta, task);
 

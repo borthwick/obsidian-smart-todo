@@ -25,6 +25,20 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian9 = require("obsidian");
 
 // src/types.ts
+var PRIORITY_MARK = {
+  highest: "\u{1F53A}",
+  high: "\u23EB",
+  medium: "\u{1F53C}",
+  low: "\u{1F53D}",
+  lowest: "\u23EC"
+};
+var DEFAULT_IMPORTANT_HEADINGS = [
+  "important",
+  "urgent",
+  "focus this week",
+  "priorities",
+  "priority"
+];
 var EFFORTS = ["light", "moderate", "heavy", "deep"];
 var EFFORT_WEIGHT = {
   deep: 4,
@@ -123,7 +137,11 @@ var DEFAULT_SETTINGS = {
   sweepSeconds: 180,
   showSweepBanner: true,
   sourceLabels: {},
-  collapsedSources: []
+  collapsedSources: [],
+  weekTokensEnabled: true,
+  weekStart: "sunday",
+  importantHeadings: [...DEFAULT_IMPORTANT_HEADINGS],
+  groupByHeading: true
 };
 var CATEGORIES = ["betaworks", "personal", "health"];
 var CATEGORY_LABEL = {
@@ -189,6 +207,36 @@ function projectColor(project) {
 var VIEW_TYPE_SMART_TODO = "smart-todo-view";
 
 // src/scope.ts
+function weekNumber(date, weekStart = "sunday") {
+  if (weekStart === "monday") {
+    const d2 = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const dow = (d2.getDay() + 6) % 7;
+    d2.setDate(d2.getDate() - dow + 3);
+    const firstThursday = new Date(d2.getFullYear(), 0, 4);
+    const fdow = (firstThursday.getDay() + 6) % 7;
+    firstThursday.setDate(firstThursday.getDate() - fdow + 3);
+    return 1 + Math.round((d2.getTime() - firstThursday.getTime()) / (7 * 864e5));
+  }
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const jan1 = new Date(d.getFullYear(), 0, 1);
+  const weekOneStart = new Date(jan1);
+  weekOneStart.setDate(jan1.getDate() - jan1.getDay());
+  return 1 + Math.floor((d.getTime() - weekOneStart.getTime()) / (7 * 864e5));
+}
+function weekYear(date, weekStart = "sunday") {
+  if (weekStart !== "monday")
+    return date.getFullYear();
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dow = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - dow + 3);
+  return d.getFullYear();
+}
+function expandPathTokens(path, today = new Date(), weekStart = "sunday") {
+  if (!path.includes("{{"))
+    return path;
+  const week = weekNumber(today, weekStart);
+  return path.replace(/\{\{week:02\}\}/gi, String(week).padStart(2, "0")).replace(/\{\{week\}\}/gi, String(week)).replace(/\{\{year\}\}/gi, String(weekYear(today, weekStart)));
+}
 function normalizePath(raw) {
   return raw.trim().replace(/^["']|["']$/g, "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").trim();
 }
@@ -199,8 +247,9 @@ function samePath(a, b) {
   const right = normalizePath(b).toLowerCase();
   return left.length > 0 && left === right;
 }
-function parseScope(raw) {
-  const parts = (raw != null ? raw : "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
+function parseScope(raw, options = {}) {
+  const { today = new Date(), weekStart = "sunday", expandTokens = true } = options;
+  const parts = (raw != null ? raw : "").split(/[,\n]/).map(normalizePath).map((p) => expandTokens ? expandPathTokens(p, today, weekStart) : p).filter((p) => p.length > 0 && !p.includes("{{"));
   const seen = /* @__PURE__ */ new Set();
   const entries = [];
   for (const path of parts) {
@@ -246,9 +295,12 @@ function primaryManagedFile(scope) {
 function rawEntries(raw) {
   return (raw != null ? raw : "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
 }
-function scopeIncludesPath(raw, path) {
+function scopeIncludesPath(raw, path, options = {}) {
+  const { today = new Date(), weekStart = "sunday" } = options;
   const needle = normalizePath(path).toLowerCase();
-  return rawEntries(raw).some((p) => p.toLowerCase() === needle);
+  return rawEntries(raw).some(
+    (p) => p.toLowerCase() === needle || expandPathTokens(p, today, weekStart).toLowerCase() === needle
+  );
 }
 function addPathToScope(raw, path) {
   const clean = normalizePath(path);
@@ -260,9 +312,12 @@ function addPathToScope(raw, path) {
   return existing.includes("\n") ? `${existing}
 ${clean}` : `${existing}, ${clean}`;
 }
-function removePathFromScope(raw, path) {
+function removePathFromScope(raw, path, options = {}) {
+  const { today = new Date(), weekStart = "sunday" } = options;
   const needle = normalizePath(path).toLowerCase();
-  const kept = rawEntries(raw).filter((p) => p.toLowerCase() !== needle);
+  const kept = rawEntries(raw).filter(
+    (p) => p.toLowerCase() !== needle && expandPathTokens(p, today, weekStart).toLowerCase() !== needle
+  );
   return (raw != null ? raw : "").includes("\n") ? kept.join("\n") : kept.join(", ");
 }
 function describeScope(scope) {
@@ -270,14 +325,48 @@ function describeScope(scope) {
 }
 
 // src/parser.ts
-var TASK_LINE_RE = /^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s*(.*)$/;
+var TASK_LINE_RE = /^(\s*)(?:[-*+]|\d+[.)])\s+\[(.)\]\s*(.*)$/;
+var DONE_MARKERS = /* @__PURE__ */ new Set(["x", "X"]);
+var CANCELLED_MARKERS = /* @__PURE__ */ new Set(["-"]);
+var HEADING_RE = /^(#{1,6})\s+(.*)$/;
+function cleanHeading(raw) {
+  return displayTitle(
+    raw.replace(/<[^>]+>/g, "").replace(/^#+\s*/, "").replace(/\s*#+\s*$/, "")
+  );
+}
 var DUE_RE = /📅\s*(\d{4}-\d{2}-\d{2})/;
 var DEFER_RE = /⏳\s*(\d{4}-\d{2}-\d{2})/;
 var DONE_DATE_RE = /✅\s*(\d{4}-\d{2}-\d{2})/;
 var INLINE_FIELD_RE = /\[([A-Za-z][\w-]*)\s*::\s*([^\]]*)\]/g;
 var EMOJI_DATE_TOKEN_RE = /(?:📅|⏳|✅|🛫|➕|❌)\s*\d{4}-\d{2}-\d{2}/g;
 var RECURRENCE_TOKEN_RE = /🔁[^[\]📅⏳✅🛫➕❌🔺⏫🔼🔽⏬]*/gu;
+var TASK_ID_TOKEN_RE = /(?:🆔|⛔)\s*[A-Za-z0-9]+(?:\s*,\s*[A-Za-z0-9]+)*/gu;
 var PRIORITY_EMOJI_RE = /[🔺⏫🔼🔽⏬]/gu;
+var PRIORITY_BY_EMOJI = {
+  "\u{1F53A}": "highest",
+  "\u23EB": "high",
+  "\u{1F53C}": "medium",
+  "\u{1F53D}": "low",
+  "\u23EC": "lowest"
+};
+function parsePriority(body) {
+  var _a;
+  const m = new RegExp(PRIORITY_EMOJI_RE.source, "u").exec(body);
+  return m ? (_a = PRIORITY_BY_EMOJI[m[0]]) != null ? _a : null : null;
+}
+function importanceFromPriority(p) {
+  if (p === "highest" || p === "high" || p === "medium")
+    return true;
+  if (p === "low" || p === "lowest")
+    return false;
+  return null;
+}
+function headingImpliesImportant(heading, needles = DEFAULT_IMPORTANT_HEADINGS) {
+  if (!heading)
+    return false;
+  const h = heading.toLowerCase();
+  return needles.some((n) => n.trim().length > 0 && h.includes(n.trim().toLowerCase()));
+}
 function parseDate(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m)
@@ -331,29 +420,57 @@ function extractInlineFields(text) {
   return out;
 }
 function deriveTitle(body) {
-  return body.replace(new RegExp(INLINE_FIELD_RE.source, "g"), "").replace(EMOJI_DATE_TOKEN_RE, "").replace(RECURRENCE_TOKEN_RE, "").replace(PRIORITY_EMOJI_RE, "").replace(/\s+/g, " ").trim();
+  return body.replace(new RegExp(INLINE_FIELD_RE.source, "g"), "").replace(EMOJI_DATE_TOKEN_RE, "").replace(RECURRENCE_TOKEN_RE, "").replace(TASK_ID_TOKEN_RE, "").replace(PRIORITY_EMOJI_RE, "").replace(/\s+/g, " ").trim();
 }
 function displayTitle(title) {
   return title.replace(/!?\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/!?\[\[([^\]]+)\]\]/g, "$1").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*\*([^*]+)\*\*\*/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2").replace(/__([^_]+)__/g, "$1").replace(/==([^=]+)==/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\s+/g, " ").trim();
 }
-function parseTaskLine(line, filePath, lineNumber) {
+function parseTaskLine(line, filePath, lineNumber, context = {}) {
+  var _a;
   const m = TASK_LINE_RE.exec(line);
   if (!m)
     return null;
-  const checkbox = m[1];
-  const body = m[2];
+  const indentRaw = m[1];
+  const checkbox = m[2];
+  const body = m[3];
   const fields = extractInlineFields(body);
   const dueMatch = DUE_RE.exec(body);
   const deferMatch = DEFER_RE.exec(body);
   const doneMatch = DONE_DATE_RE.exec(body);
   const pushesRaw = fields["pushes"];
   const pushesParsed = pushesRaw === void 0 ? NaN : parseInt(pushesRaw, 10);
+  const priority = parsePriority(body);
+  const heading = (_a = context.heading) != null ? _a : null;
+  let important = null;
+  let importantFrom = null;
+  if (fields["important"] !== void 0) {
+    important = normalizeImportant(fields["important"]);
+    if (important !== null)
+      importantFrom = "field";
+  }
+  if (important === null && priority !== null) {
+    important = importanceFromPriority(priority);
+    if (important !== null)
+      importantFrom = "priority";
+  }
+  if (important === null && headingImpliesImportant(heading, context.importantHeadings)) {
+    important = true;
+    importantFrom = "heading";
+  }
   return {
     filePath,
     lineNumber,
     rawText: line,
     title: deriveTitle(body),
-    status: checkbox === " " ? "open" : "done",
+    status: DONE_MARKERS.has(checkbox) || CANCELLED_MARKERS.has(checkbox) ? "done" : "open",
+    marker: checkbox,
+    cancelled: CANCELLED_MARKERS.has(checkbox),
+    // Tabs count as one level; a 4-space indent is the common alternative.
+    // Only the ordering matters downstream, not the absolute number.
+    indent: indentRaw.replace(/\t/g, "    ").length,
+    heading,
+    priority,
+    importantFrom,
     due: dueMatch ? parseDate(dueMatch[1]) : null,
     defer: deferMatch ? parseDate(deferMatch[1]) : null,
     doneDate: doneMatch ? parseDate(doneMatch[1]) : null,
@@ -362,20 +479,66 @@ function parseTaskLine(line, filePath, lineNumber) {
     pushes: Number.isFinite(pushesParsed) && pushesParsed > 0 ? pushesParsed : 0,
     project: fields["project"] || null,
     assigned: fields["assigned"] || null,
-    important: fields["important"] !== void 0 ? normalizeImportant(fields["important"]) : null
+    important
   };
 }
-function parseTasksFromContent(content, filePath) {
+function parseTasksFromContent(content, filePath, options = {}) {
   const tasks = [];
   const lines = content.split("\n");
+  let heading = null;
+  const ancestry = [];
+  let inFence = false;
   for (let i = 0; i < lines.length; i++) {
-    const task = parseTaskLine(lines[i], filePath, i);
-    if (task)
-      tasks.push(task);
+    const line = lines[i];
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence)
+      continue;
+    const headingMatch = HEADING_RE.exec(line);
+    if (headingMatch) {
+      heading = cleanHeading(headingMatch[2]) || null;
+      ancestry.length = 0;
+      continue;
+    }
+    const task = parseTaskLine(lines[i], filePath, i, {
+      heading,
+      importantHeadings: options.importantHeadings
+    });
+    if (!task)
+      continue;
+    while (ancestry.length > 0 && ancestry[ancestry.length - 1].indent >= task.indent) {
+      ancestry.pop();
+    }
+    const parent = ancestry[ancestry.length - 1];
+    if (parent) {
+      task.parentLine = parent.lineNumber;
+      if (task.important === null && parent.important !== null) {
+        task.important = parent.important;
+        task.importantFrom = "parent";
+      }
+    }
+    ancestry.push(task);
+    tasks.push(task);
+  }
+  return markParents(tasks);
+}
+function markParents(tasks) {
+  var _a, _b;
+  const openChildren = /* @__PURE__ */ new Map();
+  for (const t of tasks) {
+    if (t.parentLine === null || t.status !== "open")
+      continue;
+    const key = `${t.filePath}:${t.parentLine}`;
+    openChildren.set(key, ((_a = openChildren.get(key)) != null ? _a : 0) + 1);
+  }
+  for (const t of tasks) {
+    t.openChildren = (_b = openChildren.get(`${t.filePath}:${t.lineNumber}`)) != null ? _b : 0;
   }
   return tasks;
 }
-async function scanScope(app, scope) {
+async function scanScope(app, scope, options = {}) {
   const files = app.vault.getMarkdownFiles().filter((file) => isInScope(file.path, scope));
   const all = [];
   for (const file of files) {
@@ -385,21 +548,23 @@ async function scanScope(app, scope) {
     } catch (e) {
       continue;
     }
-    if (content.indexOf("[ ]") === -1 && !/\[[xX]\]/.test(content))
+    if (!/^\s*(?:[-*+]|\d+[.)])\s+\[.\]/m.test(content))
       continue;
-    all.push(...parseTasksFromContent(content, file.path));
+    all.push(...parseTasksFromContent(content, file.path, options));
   }
   return all;
 }
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
+var WEEK_PATTERN = "2. Day Planners/Weeks/Week {{week}} of {{year}}.md";
 var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
   display() {
+    var _a;
     const el = this.containerEl;
     el.empty();
     el.createEl("h2", { text: "Smart ToDo" });
@@ -411,7 +576,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
     const summary = el.createDiv({ cls: "smart-todo-scope-summary" });
     const renderSummary = () => {
       summary.empty();
-      const scope = parseScope(this.plugin.settings.managedFiles);
+      const scope = this.plugin.scope;
       const matches = this.app.vault.getMarkdownFiles().filter((f) => this.plugin.isInManagedScope(f.path));
       if (scope.usedFallback) {
         summary.createDiv({
@@ -484,6 +649,82 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       );
     };
     renderInboxWarning();
+    el.createEl("h3", { text: "The weekly page" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text: "A tracked path can carry {{week}}, {{week:02}} and {{year}}, which resolve each time the panel scans. Track the pattern once and the right week's page is always the one being read."
+    });
+    new import_obsidian.Setting(el).setName("Resolve {{week}} and {{year}} in tracked paths").setDesc(
+      "Off means a path with braces in it is skipped rather than treated as a literal filename."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.weekTokensEnabled !== false).onChange(async (v) => {
+        this.plugin.settings.weekTokensEnabled = v;
+        await this.plugin.saveSettings();
+        renderSummary();
+        this.plugin.refreshViews();
+      })
+    );
+    new import_obsidian.Setting(el).setName("Weeks start on").setDesc(
+      `Which convention your week-page numbering follows. Sunday is the US convention (week 1 contains Jan 1); Monday is ISO-8601. These disagree by one for much of the year, and the wrong one points at an adjacent week's file \u2014 which looks like the feature not working. Right now: week ${weekNumber(new Date(), (_a = this.plugin.settings.weekStart) != null ? _a : "sunday")}.`
+    ).addDropdown((dd) => {
+      var _a2;
+      dd.addOption("sunday", "Sunday (US)");
+      dd.addOption("monday", "Monday (ISO-8601)");
+      dd.setValue((_a2 = this.plugin.settings.weekStart) != null ? _a2 : "sunday").onChange(async (v) => {
+        this.plugin.settings.weekStart = v;
+        await this.plugin.saveSettings();
+        renderSummary();
+        this.plugin.refreshViews();
+        this.display();
+      });
+    });
+    new import_obsidian.Setting(el).setName("Track this week's page").setDesc(
+      `Adds "${WEEK_PATTERN}" to the managed files above. Edit the pattern there if your weekly notes live somewhere else.`
+    ).addButton(
+      (btn) => btn.setButtonText(
+        scopeIncludesPath(this.plugin.settings.managedFiles, WEEK_PATTERN) ? "Already tracked" : "Track it"
+      ).onClick(async () => {
+        var _a2;
+        this.plugin.settings.managedFiles = addPathToScope(
+          this.plugin.settings.managedFiles,
+          WEEK_PATTERN
+        );
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+        const resolved = expandPathTokens(
+          WEEK_PATTERN,
+          new Date(),
+          (_a2 = this.plugin.settings.weekStart) != null ? _a2 : "sunday"
+        );
+        const exists = !!this.app.vault.getAbstractFileByPath(resolved);
+        new import_obsidian.Notice(
+          exists ? `Smart ToDo: tracking ${resolved}.` : `Smart ToDo: pattern added, but ${resolved} doesn't exist yet \u2014 check the folder and the week-start setting.`,
+          8e3
+        );
+        this.display();
+      })
+    );
+    new import_obsidian.Setting(el).setName("Headings that mean important").setDesc(
+      'Comma-separated. A task under a heading containing any of these counts as important unless the task says otherwise itself \u2014 the judgment on "Focus this week, what is Important and Urgent" was made once for the whole list rather than once per line. The panel marks inferred importance with \xA7 so you can see where it came from.'
+    ).addTextArea((text) => {
+      var _a2;
+      text.setPlaceholder(DEFAULT_IMPORTANT_HEADINGS.join(", ")).setValue(((_a2 = this.plugin.settings.importantHeadings) != null ? _a2 : []).join(", ")).onChange(async (value) => {
+        this.plugin.settings.importantHeadings = value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      });
+      text.inputEl.rows = 2;
+      text.inputEl.addClass("smart-todo-scope-input");
+    });
+    new import_obsidian.Setting(el).setName("Split tracked notes by heading").setDesc(
+      "Inside a tracked note, group its tasks under the heading each sits below. On a weekly page those sections are most of the meaning."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.groupByHeading !== false).onChange(async (v) => {
+        this.plugin.settings.groupByHeading = v;
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      })
+    );
     el.createEl("h3", { text: "Display" });
     const accentSetting = new import_obsidian.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
     const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
@@ -678,7 +919,7 @@ function removeEmojiDate(line, re) {
 }
 function setCheckbox(line, done) {
   return line.replace(
-    /^(\s*(?:[-*+]|\d+[.)])\s+\[)[ xX](\])/,
+    /^(\s*(?:[-*+]|\d+[.)])\s+\[).(\])/,
     `$1${done ? "x" : " "}$2`
   );
 }
@@ -733,7 +974,7 @@ function buildProjectLine(task, project) {
 async function setTaskProject(app, task, project) {
   await replaceTaskLine(app, task, buildProjectLine(task, project));
 }
-var LINE_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s*)/;
+var LINE_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[.\]\s*)/;
 var DATE_EMOJI = "\u{1F4C5}\u23F3\u2705\u{1F6EB}\u2795\u274C";
 var PRIORITY_EMOJI = "\u{1F53A}\u23EB\u{1F53C}\u{1F53D}\u23EC";
 var TOKEN_RE = new RegExp(
@@ -1269,6 +1510,26 @@ function selectTasks(tasks, query, today = startOfToday()) {
     });
   }
   return query.horizon === "done" ? out.sort(compareCompleted) : out.sort((a, b) => compareForToday(a, b, today));
+}
+function groupByHeading(tasks) {
+  var _a, _b;
+  const sections = [];
+  const index = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    const key = (_a = task.heading) != null ? _a : "\0none";
+    let section = index.get(key);
+    if (!section) {
+      section = { heading: (_b = task.heading) != null ? _b : null, tasks: [] };
+      index.set(key, section);
+      sections.push(section);
+    }
+    section.tasks.push(task);
+  }
+  return sections;
+}
+function isContainer(task) {
+  var _a;
+  return ((_a = task.openChildren) != null ? _a : 0) > 0;
 }
 function groupBySource(tasks, isHome) {
   const main = [];
@@ -2500,7 +2761,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
   renderFocus(tasks, today) {
     const split = groupBySource(tasks, (p) => this.isHomeFile(p));
     const grouped = groupByQuadrant(split.main, today);
-    const quickies = tasks.filter((t) => t.effort === "light");
+    const quickies = tasks.filter((t) => t.effort === "light" && !isContainer(t));
     let bannerPlaced = false;
     for (const q of QUADRANT_ORDER) {
       const group = grouped[q];
@@ -2595,9 +2856,51 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     });
     if (collapsed)
       return;
-    for (const task of group.tasks) {
-      this.renderRow(this.bodyEl, task, today, { hideSource: true });
+    if (!this.plugin.settings.groupByHeading) {
+      for (const task of group.tasks)
+        this.renderTree(group.tasks, task, today);
+      return;
     }
+    const sections = groupByHeading(group.tasks);
+    for (const section of sections) {
+      if (section.heading && sections.length > 1) {
+        const sub = this.bodyEl.createDiv({ cls: "stw-heading-head" });
+        sub.createSpan({ cls: "stw-heading-title", text: section.heading });
+        sub.createSpan({ cls: "stw-heading-tally", text: String(section.tasks.length) });
+      }
+      for (const task of section.tasks)
+        this.renderTree(section.tasks, task, today);
+    }
+  }
+  /**
+   * Render a task at its nesting depth, but only once.
+   *
+   * `parseTasksFromContent` returns a flat list with `parentLine` pointing up,
+   * so the tree is already there — this just skips any task whose parent is in
+   * the same visible set (the parent's own call renders it) and indents the
+   * rest. The alternative, rendering children as peers, loses the one thing the
+   * indentation on the page was saying: *this is how that gets done*.
+   */
+  renderTree(siblings, task, today) {
+    const depth = this.visibleDepth(siblings, task);
+    if (depth < 0)
+      return;
+    this.renderRow(this.bodyEl, task, today, { hideSource: true, depth });
+  }
+  /** Indent level relative to the shallowest visible ancestor chain, or -1. */
+  visibleDepth(siblings, task) {
+    let depth = 0;
+    let current = task;
+    for (let i = 0; i < 8; i++) {
+      const parent = siblings.find(
+        (s) => s.filePath === current.filePath && s.lineNumber === current.parentLine
+      );
+      if (!parent)
+        break;
+      depth++;
+      current = parent;
+    }
+    return Math.min(depth, 3);
   }
   async toggleSource(path) {
     var _a;
@@ -2692,7 +2995,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
   }
   /** Sweep mode: the queue, previewed, with one button that starts the clock. */
   renderSweep(tasks, today) {
-    const queue = tasks.filter((t) => t.effort === "light");
+    const queue = tasks.filter((t) => t.effort === "light" && !isContainer(t));
     const head = this.bodyEl.createDiv({ cls: "stw-sweep-intro" });
     head.createDiv({
       cls: "stw-sweep-intro-head",
@@ -2732,7 +3035,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
    * be the Betaworks quick wins, not every loose end you own.
    */
   sweepNow() {
-    const queue = this.visibleTasks().filter((t) => t.effort === "light");
+    const queue = this.visibleTasks().filter((t) => t.effort === "light" && !isContainer(t));
     if (queue.length === 0)
       return false;
     this.startSweep(queue);
@@ -2777,7 +3080,14 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
   }
   // --- Row -----------------------------------------------------------------
   renderRow(parent, task, today, opts = {}) {
+    var _a;
     const row = parent.createDiv({ cls: "stw-row-task" });
+    if (opts.depth) {
+      row.addClass("is-child");
+      row.style.setProperty("--stw-depth", String(opts.depth));
+    }
+    if (isContainer(task))
+      row.addClass("is-container");
     if (task.status === "done")
       row.addClass("is-done");
     if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
@@ -2806,6 +3116,24 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     titleEl.addEventListener("click", () => this.openEditor(task));
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
     const meta = main.createDiv({ cls: "stw-task-meta" });
+    if (isContainer(task)) {
+      meta.createSpan({
+        cls: "stw-subcount",
+        text: `${task.openChildren} open`,
+        attr: { "aria-label": "This has sub-tasks \u2014 the work is in those" }
+      });
+    }
+    if (task.important === true && task.importantFrom && task.importantFrom !== "field") {
+      const from = task.importantFrom;
+      meta.createSpan({
+        cls: "stw-why",
+        text: from === "priority" ? PRIORITY_MARK[(_a = task.priority) != null ? _a : "medium"] : from === "heading" ? "\xA7" : "\u21B3",
+        attr: {
+          "aria-label": from === "priority" ? `Important: priority ${task.priority} on the line` : from === "heading" ? `Important: under "${task.heading}"` : "Important: inherited from the task above",
+          title: from === "priority" ? `Marked ${task.priority} priority in the note` : from === "heading" ? `Under the heading "${task.heading}"` : "Inherited from its parent task"
+        }
+      });
+    }
     this.renderCategoryChip(meta, task);
     if (!opts.hideSource)
       this.renderSourceChip(meta, task);
@@ -3238,7 +3566,7 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
           return;
         if (samePath(file.path, this.primaryFile))
           return;
-        const tracked = scopeIncludesPath(this.settings.managedFiles, file.path);
+        const tracked = scopeIncludesPath(this.settings.managedFiles, file.path, this.scopeOptions);
         menu.addItem(
           (item) => item.setTitle(tracked ? "Smart ToDo: stop tracking tasks here" : "Smart ToDo: track tasks in this note").setIcon("list-checks").onClick(() => void this.toggleTracked(file.path))
         );
@@ -3308,8 +3636,8 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       new import_obsidian9.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
       return;
     }
-    const tracked = scopeIncludesPath(this.settings.managedFiles, path);
-    this.settings.managedFiles = tracked ? removePathFromScope(this.settings.managedFiles, path) : addPathToScope(this.settings.managedFiles, path);
+    const tracked = scopeIncludesPath(this.settings.managedFiles, path, this.scopeOptions);
+    this.settings.managedFiles = tracked ? removePathFromScope(this.settings.managedFiles, path, this.scopeOptions) : addPathToScope(this.settings.managedFiles, path);
     await this.saveSettings();
     this.refreshViews();
     const name = (_a = path.split("/").pop()) != null ? _a : path;
@@ -3340,9 +3668,22 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       8e3
     );
   }
+  /**
+   * Options shared by every scope call, so a `{{week}}` entry resolves to the
+   * same file wherever it's asked about. Threaded explicitly rather than read
+   * from a module global: two call sites disagreeing about the week start is
+   * exactly the bug that makes track/untrack silently no-op.
+   */
+  get scopeOptions() {
+    var _a;
+    return {
+      weekStart: (_a = this.settings.weekStart) != null ? _a : "sunday",
+      expandTokens: this.settings.weekTokensEnabled !== false
+    };
+  }
   /** The managed scope as currently configured. */
   get scope() {
-    return parseScope(this.settings.managedFiles);
+    return parseScope(this.settings.managedFiles, this.scopeOptions);
   }
   isInManagedScope(path) {
     return isInScope(path, this.scope);
@@ -3382,7 +3723,10 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
     return !!path && !this.isInManagedScope(path);
   }
   async scan() {
-    return scanScope(this.app, this.scope);
+    var _a;
+    return scanScope(this.app, this.scope, {
+      importantHeadings: (_a = this.settings.importantHeadings) != null ? _a : DEFAULT_IMPORTANT_HEADINGS
+    });
   }
   /** Create the managed file if it's missing, so capture always has a target. */
   async ensurePrimaryFile() {

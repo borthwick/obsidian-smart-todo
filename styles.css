@@ -459,6 +459,29 @@
 .stw-source-head.is-collapsed .stw-source-title {
   color: var(--stw-accent);
 }
+/* A heading inside a tracked note. Quieter than the note's own header — it's a
+   subdivision of something already labelled, not a new list. */
+.stw-heading-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) var(--size-2-2) 2px var(--size-4-3);
+}
+.stw-heading-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stw-heading-tally {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
 .stw-source-rename {
   flex: 1;
   min-width: 0;
@@ -492,6 +515,19 @@
 }
 .stw-row-task.is-resting {
   opacity: 0.7;
+}
+/* A sub-task sits in from its parent, with a hairline rail standing in for the
+   indentation it has on the page. */
+.stw-row-task.is-child {
+  margin-left: calc(var(--stw-depth, 1) * var(--size-4-3));
+  border-left: 1px solid var(--background-modifier-border);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+/* A parent with open children is a container — you don't do it, you do what's
+   under it. Lighter title, so the actionable rows read as the actionable ones. */
+.stw-row-task.is-container > .stw-task-main > .stw-task-title {
+  font-weight: var(--font-medium);
+  color: var(--text-muted);
 }
 /* Overdue gets a hairline, not a red row. One red row is a warning; six red
    rows are wallpaper. */
@@ -582,6 +618,17 @@
 
 .stw-assigned {
   color: var(--text-muted);
+}
+
+/* Why the panel decided this was important, when it inferred it. Deliberately
+   small: the provenance needs to be checkable, not announced. */
+.stw-why {
+  color: var(--text-faint);
+  cursor: help;
+}
+.stw-subcount {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
 }
 
 /* "N undated tasks hidden" — drawn under a non-empty list, so it has to be

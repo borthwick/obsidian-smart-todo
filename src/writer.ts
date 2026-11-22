@@ -124,10 +124,19 @@ function removeEmojiDate(line: string, re: RegExp): string {
   return line.replace(new RegExp(`\\s*${re.source}`), "");
 }
 
-/** Flip `- [ ]` ⇄ `- [x]` while preserving indent and bullet style. */
+/**
+ * Flip `- [ ]` ⇄ `- [x]` while preserving indent and bullet style.
+ *
+ * The character class is any single char, matching the parser. It used to be
+ * `[ xX]`, which meant a theme-status line like `- [u] 2025 Taxes` — now
+ * visible in the panel — would have silently refused to tick: the replace
+ * found nothing, the line came back identical, and `processFile` treats an
+ * unchanged line as "nothing to do". A checkbox that does nothing when clicked
+ * is worse than one that was never shown.
+ */
 function setCheckbox(line: string, done: boolean): string {
   return line.replace(
-    /^(\s*(?:[-*+]|\d+[.)])\s+\[)[ xX](\])/,
+    /^(\s*(?:[-*+]|\d+[.)])\s+\[).(\])/,
     `$1${done ? "x" : " "}$2`
   );
 }
@@ -256,7 +265,7 @@ export async function setTaskProject(
 // because the title isn't a delimited token, it's "whatever text is left".
 
 /** Indent + bullet + checkbox, i.e. everything before the task body. */
-const LINE_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s*)/;
+const LINE_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[.\]\s*)/;
 
 /** The emoji that introduce a dated field, per the Tasks plugin convention. */
 const DATE_EMOJI = "📅⏳✅🛫➕❌";

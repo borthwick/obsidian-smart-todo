@@ -8,6 +8,44 @@
 
 export type TaskStatus = "open" | "done";
 
+/** Tasks-plugin priority levels, read from 🔺⏫🔼🔽⏬ on the line. */
+export type TaskPriority = "highest" | "high" | "medium" | "low" | "lowest";
+
+/**
+ * Where a task's importance came from.
+ *
+ * Carried so the panel can show its reasoning. Importance decides which
+ * Eisenhower section a task lands in, and inferring it from markup the user
+ * wrote for other reasons is only acceptable if the inference is legible —
+ * otherwise work moves between sections for no visible cause.
+ */
+export type ImportanceSource = "field" | "priority" | "heading" | "parent" | null;
+
+/** The emoji a priority was written as, echoed back in the row's meta line. */
+export const PRIORITY_MARK: Record<TaskPriority, string> = {
+  highest: "🔺",
+  high: "⏫",
+  medium: "🔼",
+  low: "🔽",
+  lowest: "⏬",
+};
+
+/**
+ * Headings that declare their whole subtree important.
+ *
+ * Lives here rather than in the parser because it's a default *setting* — the
+ * parser reads whatever the user ends up with. The week page's
+ * `##### Focus this week, what is Important and Urgent` is the motivating case:
+ * the judgment was made once for a list instead of once per line.
+ */
+export const DEFAULT_IMPORTANT_HEADINGS = [
+  "important",
+  "urgent",
+  "focus this week",
+  "priorities",
+  "priority",
+];
+
 export type Effort = "light" | "moderate" | "heavy" | "deep";
 
 export const EFFORTS: Effort[] = ["light", "moderate", "heavy", "deep"];
@@ -133,6 +171,25 @@ export interface SmartTask {
   /** Line text with emoji dates and inline fields stripped out. */
   title: string;
   status: TaskStatus;
+  /**
+   * The literal character between the brackets. Themes define custom statuses
+   * (`/` in progress, `>` forwarded, `u`), and an unrecognised one must round-
+   * trip rather than be normalised away by an unrelated edit.
+   */
+  marker: string;
+  /** `- [-]` — abandoned rather than finished. Counted as closed, shown apart. */
+  cancelled: boolean;
+  /** Leading whitespace width, tabs as 4. Only the ordering is meaningful. */
+  indent: number;
+  /** Line number of the nearest less-indented task above, if any. */
+  parentLine?: number | null;
+  /** Open direct descendants — filled by `markParents` after a whole scan. */
+  openChildren?: number;
+  /** Nearest markdown heading above the line, HTML and marks stripped. */
+  heading: string | null;
+  /** Priority read from the line's 🔺⏫🔼🔽⏬, if it carries one. */
+  priority: TaskPriority | null;
+  importantFrom: ImportanceSource;
   due: Date | null;
   defer: Date | null;
   doneDate: Date | null;
@@ -320,6 +377,33 @@ export interface SmartTodoSettings {
   sourceLabels: Record<string, string>;
   /** Paths whose group is folded shut. Folding has to survive a reload. */
   collapsedSources: string[];
+  /**
+   * Scope entries may contain `{{week}}`, `{{week:02}}` and `{{year}}`.
+   *
+   * The weekly page is the one note whose path is a moving target. Tracking
+   * `Week 48 of 2026.md` by hand means re-tracking it every Monday and
+   * remembering to untrack last week's — which nobody does, so the panel ends
+   * up showing a stale focus list, the worst possible failure for a page whose
+   * entire job is saying what matters *now*. A pattern follows the calendar.
+   */
+  weekTokensEnabled: boolean;
+  /**
+   * Which day a week number rolls over on.
+   *
+   * John's vault numbers Sunday-start weeks — `Week 48 of 2026` is the page he
+   * wrote on Sunday 22 Nov 2026 for the week ahead, where ISO-8601 would call
+   * that date week 47. Guessing wrong puts the panel on the wrong page, so it
+   * is a setting with his convention as the default.
+   */
+  weekStart: "sunday" | "monday";
+  /**
+   * Headings whose tasks are important, matched as case-insensitive substrings.
+   *
+   * Empty disables heading inference entirely; priority emoji still apply.
+   */
+  importantHeadings: string[];
+  /** Split a tracked note's group into sub-sections by its own headings. */
+  groupByHeading: boolean;
 }
 
 export type Layout = "card" | "table";
@@ -339,6 +423,10 @@ export const DEFAULT_SETTINGS: SmartTodoSettings = {
   showSweepBanner: true,
   sourceLabels: {},
   collapsedSources: [],
+  weekTokensEnabled: true,
+  weekStart: "sunday",
+  importantHeadings: [...DEFAULT_IMPORTANT_HEADINGS],
+  groupByHeading: true,
 };
 
 // --- Categories ----------------------------------------------------------

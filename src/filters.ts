@@ -258,6 +258,51 @@ export interface SourceGroup {
   tasks: SmartTask[];
 }
 
+export interface HeadingSection {
+  /** The note's own heading, already cleaned of marks and HTML. */
+  heading: string | null;
+  tasks: SmartTask[];
+}
+
+/**
+ * Split one note's tasks by the heading each sits under.
+ *
+ * A project note's checkboxes arrive in sections, and on a page like the weekly
+ * one the section is most of the meaning: *Focus this week*, *Fund 4.0 Prep*,
+ * *2025 Taxes* and *Jobs + kids and AI* are four different kinds of commitment,
+ * and flattened into one list of eleven rows they read as a pile. This is the
+ * same argument as folding a note's tasks under its name, one level finer.
+ *
+ * Tasks above the first heading keep `null` and sort first, which is where a
+ * page's loose preamble items belong.
+ */
+export function groupByHeading(tasks: SmartTask[]): HeadingSection[] {
+  const sections: HeadingSection[] = [];
+  const index = new Map<string, HeadingSection>();
+  for (const task of tasks) {
+    const key = task.heading ?? " none";
+    let section = index.get(key);
+    if (!section) {
+      section = { heading: task.heading ?? null, tasks: [] };
+      index.set(key, section);
+      sections.push(section);
+    }
+    section.tasks.push(task);
+  }
+  return sections;
+}
+
+/**
+ * Does this task have open sub-tasks?
+ *
+ * A parent with open children is a container — you don't *do* "Fund 4 build to
+ * 30M", you do the two things indented under it. Containers shouldn't be swept
+ * as quick wins or counted as the actionable item.
+ */
+export function isContainer(task: SmartTask): boolean {
+  return (task.openChildren ?? 0) > 0;
+}
+
 export interface SourceSplit {
   /** Tasks from the task files themselves — the ordinary list. */
   main: SmartTask[];

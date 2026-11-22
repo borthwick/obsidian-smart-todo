@@ -3,16 +3,32 @@
 // One setting that matters: which files are managed. Everything else about the
 // plugin is behaviour, not configuration.
 
-import { App, PluginSettingTab, Setting } from "obsidian";
-import { parseScope, primaryManagedFile } from "./scope";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import {
+  addPathToScope,
+  expandPathTokens,
+  primaryManagedFile,
+  scopeIncludesPath,
+  weekNumber,
+} from "./scope";
 import {
   ACCENTS,
   Accent,
+  DEFAULT_IMPORTANT_HEADINGS,
   DEFAULT_MANAGED_FILE,
   MODES,
   ViewMode,
 } from "./types";
 import type SmartTodoPlugin from "./main";
+
+/**
+ * The weekly-note path, as a token pattern.
+ *
+ * Matches John's vault (`2. Day Planners/Weeks/Week 48 of 2026.md`) and is
+ * only a starting value — the button writes it into the managed-files box,
+ * where it's editable like any other entry.
+ */
+const WEEK_PATTERN = "2. Day Planners/Weeks/Week {{week}} of {{year}}.md";
 
 export class SmartTodoSettingTab extends PluginSettingTab {
   plugin: SmartTodoPlugin;
@@ -41,7 +57,7 @@ export class SmartTodoSettingTab extends PluginSettingTab {
     const summary = el.createDiv({ cls: "smart-todo-scope-summary" });
     const renderSummary = (): void => {
       summary.empty();
-      const scope = parseScope(this.plugin.settings.managedFiles);
+      const scope = this.plugin.scope;
       const matches = this.app.vault
         .getMarkdownFiles()
         .filter((f) => this.plugin.isInManagedScope(f.path));
@@ -159,6 +175,135 @@ export class SmartTodoSettingTab extends PluginSettingTab {
         );
     };
     renderInboxWarning();
+
+    // --- The weekly page ---------------------------------------------------
+    //
+    // The week page is the one note whose path moves. Tracking it by hand
+    // means re-tracking it every Sunday and remembering to drop the old one,
+    // and the failure when you forget is silent and bad: the panel keeps
+    // showing last week's priorities as though they were this week's.
+    el.createEl("h3", { text: "The weekly page" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "A tracked path can carry {{week}}, {{week:02}} and {{year}}, which " +
+        "resolve each time the panel scans. Track the pattern once and the " +
+        "right week's page is always the one being read.",
+    });
+
+    new Setting(el)
+      .setName("Resolve {{week}} and {{year}} in tracked paths")
+      .setDesc(
+        "Off means a path with braces in it is skipped rather than treated as " +
+          "a literal filename."
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.weekTokensEnabled !== false).onChange(async (v) => {
+          this.plugin.settings.weekTokensEnabled = v;
+          await this.plugin.saveSettings();
+          renderSummary();
+          this.plugin.refreshViews();
+        })
+      );
+
+    new Setting(el)
+      .setName("Weeks start on")
+      .setDesc(
+        "Which convention your week-page numbering follows. Sunday is the US " +
+          "convention (week 1 contains Jan 1); Monday is ISO-8601. These " +
+          "disagree by one for much of the year, and the wrong one points at " +
+          "an adjacent week's file — which looks like the feature not working. " +
+          `Right now: week ${weekNumber(new Date(), this.plugin.settings.weekStart ?? "sunday")}.`
+      )
+      .addDropdown((dd) => {
+        dd.addOption("sunday", "Sunday (US)");
+        dd.addOption("monday", "Monday (ISO-8601)");
+        dd.setValue(this.plugin.settings.weekStart ?? "sunday").onChange(async (v) => {
+          this.plugin.settings.weekStart = v as "sunday" | "monday";
+          await this.plugin.saveSettings();
+          renderSummary();
+          this.plugin.refreshViews();
+          this.display();
+        });
+      });
+
+    // Nobody should hand-type a path with `{{` in it to find out whether it
+    // resolves. This writes the pattern and says which file it just hit.
+    new Setting(el)
+      .setName("Track this week's page")
+      .setDesc(
+        `Adds "${WEEK_PATTERN}" to the managed files above. Edit the pattern ` +
+          "there if your weekly notes live somewhere else."
+      )
+      .addButton((btn) =>
+        btn
+          .setButtonText(
+            scopeIncludesPath(this.plugin.settings.managedFiles, WEEK_PATTERN)
+              ? "Already tracked"
+              : "Track it"
+          )
+          .onClick(async () => {
+            this.plugin.settings.managedFiles = addPathToScope(
+              this.plugin.settings.managedFiles,
+              WEEK_PATTERN
+            );
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+            const resolved = expandPathTokens(
+              WEEK_PATTERN,
+              new Date(),
+              this.plugin.settings.weekStart ?? "sunday"
+            );
+            const exists = !!this.app.vault.getAbstractFileByPath(resolved);
+            new Notice(
+              exists
+                ? `Smart ToDo: tracking ${resolved}.`
+                : `Smart ToDo: pattern added, but ${resolved} doesn't exist yet — ` +
+                  "check the folder and the week-start setting.",
+              8000
+            );
+            this.display();
+          })
+      );
+
+    new Setting(el)
+      .setName("Headings that mean important")
+      .setDesc(
+        "Comma-separated. A task under a heading containing any of these counts " +
+          "as important unless the task says otherwise itself — the judgment on " +
+          '"Focus this week, what is Important and Urgent" was made once for the ' +
+          "whole list rather than once per line. The panel marks inferred " +
+          "importance with § so you can see where it came from."
+      )
+      .addTextArea((text) => {
+        text
+          .setPlaceholder(DEFAULT_IMPORTANT_HEADINGS.join(", "))
+          .setValue((this.plugin.settings.importantHeadings ?? []).join(", "))
+          .onChange(async (value) => {
+            this.plugin.settings.importantHeadings = value
+              .split(",")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0);
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          });
+        text.inputEl.rows = 2;
+        text.inputEl.addClass("smart-todo-scope-input");
+      });
+
+    new Setting(el)
+      .setName("Split tracked notes by heading")
+      .setDesc(
+        "Inside a tracked note, group its tasks under the heading each sits " +
+          "below. On a weekly page those sections are most of the meaning."
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.groupByHeading !== false).onChange(async (v) => {
+          this.plugin.settings.groupByHeading = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        })
+      );
 
     el.createEl("h3", { text: "Display" });
 

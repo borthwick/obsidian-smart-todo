@@ -878,6 +878,190 @@ console.log("\n[tracked notes fold under their own heading]");
   check("nothing tracked means no groups at all", groupBySource(parseTasksFromContent("- [ ] Book the car", HOME), isHome).groups.length, 0);
 }
 
+// --- 0.10: the weekly page ------------------------------------------------
+//
+// The week page is a real file in the vault, and it broke three assumptions at
+// once: a theme status marker the checkbox regex refused to see, priority
+// emoji that were parsed and thrown away, and a heading that states the
+// Eisenhower judgment for a whole list. These assertions are that file's
+// structure, abridged.
+
+{
+  const { parseTasksFromContent, parseTaskLine, cleanHeading } = mod;
+  const { groupByHeading, isContainer, groupBySource } = mod.filters;
+  const WEEK = "2. Day Planners/Weeks/Week 48 of 2026.md";
+
+  const page = [
+    '<mark class="hltr-light-ash">Held this week \u{1FAA1} </mark>',
+    "",
+    "##### <mark class=\"hltr-light-ash\">Focus this week, what is Important and Urgent</mark>",
+    "- [ ] Fund 4 build to 30M.   Fahim next",
+    "\t- [ ] Do call with Jim to start to setup with Stepstone",
+    "\t- [ ] Kanban update for f4",
+    "- [ ] Fund 1 carry re-allocations",
+    "###### IMPORTANT",
+    "",
+    "##### Fund 4.0 Prep, and start raising  \u{1F53C}  ",
+    "- [ ] Fund 4  deck review",
+    "",
+    "- [u] **2025 Taxes** \u{23EB} \u{1F4C5} 2026-04-15",
+    "\t- [ ] Email review of Tax docs \u{23F3} 2026-03-27 \u{1F53C}",
+    "",
+    "##### Reading",
+    "- [ ] Skim the Komoroske post \u{23EC}",
+    "",
+    "##### High Quality Notes created in the past week",
+    "```base",
+    "- [ ] not a task, this is a Bases query",
+    "views: table",
+    "```",
+  ].join("\n");
+
+  const tasks = parseTasksFromContent(page, WEEK);
+  check("every real checkbox is seen, none from the fence", tasks.length, 8);
+  check("the fenced line is not a task", tasks.some((t) => /Bases query/.test(t.title)), false);
+
+  // The marker the old regex couldn't see at all.
+  const taxes = tasks.find((t) => /2025 Taxes/.test(t.title));
+  check("a theme status marker still parses", !!taxes, true);
+  check("and counts as open, not done", taxes.status, "open");
+  check("keeping its own character", taxes.marker, "u");
+
+  // Priority emoji, which used to be stripped and discarded.
+  check("high priority is read off the line", taxes.priority, "high");
+  check("and makes the task important", taxes.important, true);
+  check("saying so came from the priority", taxes.importantFrom, "priority");
+  const komoroske = tasks.find((t) => /Komoroske/.test(t.title));
+  check("lowest priority reads as not important", komoroske.important, false);
+
+  // The heading that states the judgment once for a whole list.
+  const fund4 = tasks.find((t) => /Fund 4 build/.test(t.title));
+  check("the heading survives the <mark> wrapper", fund4.heading, "Focus this week, what is Important and Urgent");
+  check("and confers importance", fund4.important, true);
+  check("from the heading", fund4.importantFrom, "heading");
+  check("a heading elsewhere confers nothing", komoroske.heading, "Reading");
+
+  // Nesting.
+  const jim = tasks.find((t) => /with Jim/.test(t.title));
+  check("a sub-task points at its parent", jim.parentLine, fund4.lineNumber);
+  check("the parent knows how many are open", fund4.openChildren, 2);
+  check("and reads as a container", isContainer(fund4), true);
+  check("a leaf does not", isContainer(jim), false);
+  const emailTax = tasks.find((t) => /Email review/.test(t.title));
+  check("an explicit priority beats the parent", emailTax.importantFrom, "priority");
+
+  // Importance flows downhill from a parent that has it, when the child is silent.
+  const inherited = parseTasksFromContent(
+    "- [ ] Ship it [important:: true]\n  - [ ] Write the release note",
+    WEEK
+  );
+  check("a silent child inherits importance", inherited[1].important, true);
+  check("and says where from", inherited[1].importantFrom, "parent");
+
+  // A heading ends the list above it, so the next section's first task is not
+  // adopted by the previous section's last parent.
+  const across = parseTasksFromContent(
+    "## A\n- [ ] Parent\n\t- [ ] Child\n## B\n- [ ] Fresh start",
+    WEEK
+  );
+  check("a heading breaks the ancestry chain", across[2].parentLine ?? null, null);
+
+  // Heading sub-grouping, which is what the panel draws.
+  const sections = groupByHeading(tasks);
+  check("one section per heading that has tasks", sections.length, 3);
+  check("in page order", sections[0].heading, "Focus this week, what is Important and Urgent");
+  check("with the right tasks in the first", sections[0].tasks.length, 4);
+  check("no task is lost across sections", sections.reduce((n, s) => n + s.tasks.length, 0), tasks.length);
+
+  check("cleanHeading strips marks and trailing hashes", cleanHeading("### <mark class=\"x\">Focus</mark> ###"), "Focus");
+
+  // The Tasks plugin's machine ids are addresses, not words.
+  check(
+    "a task id is stripped from the title",
+    parseTaskLine("- [ ] Email review of Tax docs \u{23F3} 2026-03-27 \u{1F53C} \u{1F194} eb5khv", WEEK, 0).title,
+    "Email review of Tax docs"
+  );
+  check(
+    "and so is a blocked-by id, without eating the next word",
+    parseTaskLine("- [ ] Ship the deck \u{26D4} c17efa", WEEK, 0).title,
+    "Ship the deck"
+  );
+  check(
+    "a bare id line still has a title left",
+    parseTaskLine("- [ ] \u{1F194} abc123 Call Jim", WEEK, 0).title.includes("Call Jim"),
+    true
+  );
+
+  // A cancelled task is not an open one, whatever the theme calls it.
+  const cancelled = parseTaskLine("- [-] Abandoned idea", WEEK, 0);
+  check("a cancelled marker is not open", cancelled.status, "done");
+  check("and is flagged as cancelled", cancelled.cancelled, true);
+
+  // An unjudged task under an ordinary heading stays unjudged — the inference
+  // has to be narrow or every task on every page becomes important.
+  const plain = parseTaskLine("- [ ] Book the car", WEEK, 0, { heading: "Errands" });
+  check("an ordinary heading infers nothing", plain.important, null);
+  check("with no provenance to show", plain.importantFrom, null);
+}
+
+// --- 0.10: week-number tokens ---------------------------------------------
+//
+// John's vault is Sunday-start: the page he wrote for the week beginning
+// Sunday 22 Nov 2026 is `Week 48 of 2026`, where ISO-8601 calls that date week
+// 47. Getting this wrong points the panel at an adjacent week's file, which
+// looks exactly like the feature not working.
+
+{
+  const { weekNumber, weekYear, expandPathTokens, parseScope, scopeIncludesPath, removePathFromScope } = mod.scope;
+  const NOV22 = new Date(2026, 10, 22); // a Sunday
+  const NOV28 = new Date(2026, 10, 28); // the Saturday that closes that week
+
+  check("Sunday-start puts 22 Nov 2026 in week 48", weekNumber(NOV22, "sunday"), 48);
+  check("and the Saturday after it in the same week", weekNumber(NOV28, "sunday"), 48);
+  check("the Saturday before it is week 47", weekNumber(new Date(2026, 10, 21), "sunday"), 47);
+  check("ISO-8601 disagrees by one, as expected", weekNumber(NOV22, "monday"), 47);
+
+  const PATTERN = "2. Day Planners/Weeks/Week {{week}} of {{year}}.md";
+  check(
+    "the pattern resolves to the real file",
+    expandPathTokens(PATTERN, NOV22, "sunday"),
+    "2. Day Planners/Weeks/Week 48 of 2026.md"
+  );
+  check("zero-padding is available", expandPathTokens("W{{week:02}}.md", new Date(2026, 0, 5), "sunday"), "W02.md");
+  check("a path without tokens is untouched", expandPathTokens("Tasks.md", NOV22, "sunday"), "Tasks.md");
+  // 1 Jan 2027 is a Friday; its week's Thursday is 31 Dec 2026, so ISO puts it
+  // in 2026 — which is the case that would otherwise resolve to a nonexistent file.
+  check("the year follows the week, not the date", weekYear(new Date(2027, 0, 1), "monday"), 2026);
+  check("Sunday-start just uses the calendar year", weekYear(new Date(2027, 0, 1), "sunday"), 2027);
+
+  const scope = parseScope(`Tasks.md, ${PATTERN}`, { today: NOV22, weekStart: "sunday" });
+  check("the expanded path is what gets scanned", scope.entries[1].path, "2. Day Planners/Weeks/Week 48 of 2026.md");
+  check("capture still targets the first file", mod.scope.primaryManagedFile(scope), "Tasks.md");
+  check(
+    "an unexpanded token is dropped, not scanned literally",
+    parseScope("Tasks.md, Week {{quarter}}.md", { today: NOV22 }).entries.length,
+    1
+  );
+  check(
+    "tokens off means the brace entry is skipped too",
+    parseScope(`Tasks.md, ${PATTERN}`, { today: NOV22, expandTokens: false }).entries.length,
+    1
+  );
+
+  // Right-click on the live week page has to resolve to the pattern, or the
+  // toggle appends a second frozen copy of today's path and "stop tracking"
+  // appears to do nothing.
+  const raw = `Tasks.md, ${PATTERN}`;
+  const live = "2. Day Planners/Weeks/Week 48 of 2026.md";
+  check("the live page counts as already tracked", scopeIncludesPath(raw, live, { today: NOV22 }), true);
+  check(
+    "untracking it removes the pattern",
+    removePathFromScope(raw, live, { today: NOV22 }),
+    "Tasks.md"
+  );
+  check("next week's page is not tracked by today's expansion", scopeIncludesPath(raw, "2. Day Planners/Weeks/Week 49 of 2026.md", { today: NOV22 }), false);
+}
+
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`
 );
