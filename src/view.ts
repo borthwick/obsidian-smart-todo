@@ -34,9 +34,8 @@ import {
   selectTasks,
 } from "./filters";
 import { addDays, formatDate, isSameDay, startOfToday } from "./parser";
-import { describeScope } from "./scope";
+import { describeScope, samePath } from "./scope";
 import {
-  ACCENTS,
   BUDGETS,
   Budget,
   CATEGORIES,
@@ -59,6 +58,7 @@ import {
   SmartTask,
   VIEW_TYPE_SMART_TODO,
   ViewMode,
+  applyAccentVars,
   asCategory,
   projectColor,
 } from "./types";
@@ -135,11 +135,13 @@ export class SmartTodoView extends ItemView {
     this.containerEl.children[1]?.empty();
   }
 
-  /** Accent lives in CSS custom properties so one setting repaints everything. */
+  /**
+   * Accent lives in CSS custom properties so one setting repaints everything.
+   * Set here *and* on document.body by the plugin — the panel keeps working if
+   * something resets body, and modals (mounted outside this tree) inherit.
+   */
   private applyAccent(root: HTMLElement): void {
-    const accent = ACCENTS[this.plugin.settings.accent] ?? ACCENTS.blue;
-    root.style.setProperty("--stw-accent", accent.base);
-    root.style.setProperty("--stw-accent-strong", accent.strong);
+    applyAccentVars(root, this.plugin.settings.accent);
   }
 
   /** Repaint from scratch — used when a setting changes shape, not just data. */
@@ -858,6 +860,8 @@ export class SmartTodoView extends ItemView {
 
     this.renderCategoryChip(meta, task);
 
+    this.renderSourceChip(meta, task);
+
     this.renderEffortPill(meta, task);
 
     if (task.due) {
@@ -994,6 +998,33 @@ export class SmartTodoView extends ItemView {
       })
     );
     menu.showAtMouseEvent(evt);
+  }
+
+  /**
+   * Where a task came from, when that isn't obvious.
+   *
+   * Most rows live in the tracker or the inbox and naming the file would be
+   * noise on every line. A task pulled in from a tracked project note is
+   * different: "Buy peanut oil" makes sense only once you know it's from the
+   * Turkey Fry Prep page, and ticking it here ticks the checkbox *there*, so
+   * the panel should say so. Clicking jumps to the line.
+   */
+  private renderSourceChip(parent: HTMLElement, task: SmartTask): void {
+    if (samePath(task.filePath, this.plugin.primaryFile)) return;
+    if (samePath(task.filePath, this.plugin.inboxPath)) return;
+
+    const name = task.filePath.split("/").pop()?.replace(/\.md$/i, "") ?? task.filePath;
+    const chip = parent.createSpan({
+      cls: "stw-source-chip",
+      attr: { "aria-label": `From ${task.filePath} — click to open` },
+    });
+    setIcon(chip.createSpan({ cls: "stw-source-icon" }), "file-text");
+    chip.createSpan({ text: name });
+    chip.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void this.revealTask(task);
+    });
   }
 
   private renderCategoryChip(parent: HTMLElement, task: SmartTask): void {

@@ -5,9 +5,17 @@
 // file, and safe single-line write-back. No index persistence — the scan is
 // cheap because scope is narrow by construction.
 
-import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
 import { scanScope } from "./parser";
-import { isInScope, parseScope, primaryManagedFile, samePath } from "./scope";
+import {
+  addPathToScope,
+  isInScope,
+  parseScope,
+  primaryManagedFile,
+  removePathFromScope,
+  samePath,
+  scopeIncludesPath,
+} from "./scope";
 import { SmartTodoSettingTab } from "./settings";
 import { AddTaskModal } from "./add-task-modal";
 import {
@@ -16,6 +24,7 @@ import {
   SmartTask,
   SmartTodoSettings,
   VIEW_TYPE_SMART_TODO,
+  applyAccentVars,
 } from "./types";
 import { appendTask, ensureManagedFile, safeWrite, setTaskProject } from "./writer";
 import { buildCaptureBody } from "./nlparse";
@@ -38,6 +47,7 @@ export default class SmartTodoPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.applyAccent();
 
     this.registerView(
       VIEW_TYPE_SMART_TODO,
@@ -95,6 +105,38 @@ export default class SmartTodoPlugin extends Plugin {
       },
     });
 
+    // Tracking a project note is a two-second decision ("this week's turkey
+    // list should be in the panel") and it should cost two seconds. Both the
+    // command and the right-click entry below toggle, so untracking is the
+    // same gesture — nobody has to go find the settings textarea again.
+    this.addCommand({
+      id: "track-active-note",
+      name: "Track tasks in this note",
+      checkCallback: (checking: boolean) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md") return false;
+        if (checking) return true;
+        void this.toggleTracked(file.path);
+        return true;
+      },
+    });
+
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
+        if (!(file instanceof TFile) || file.extension !== "md") return;
+        // Never offer to untrack the capture target: the panel has nowhere to
+        // put a new task without it.
+        if (samePath(file.path, this.primaryFile)) return;
+        const tracked = scopeIncludesPath(this.settings.managedFiles, file.path);
+        menu.addItem((item) =>
+          item
+            .setTitle(tracked ? "Smart ToDo: stop tracking tasks here" : "Smart ToDo: track tasks in this note")
+            .setIcon("list-checks")
+            .onClick(() => void this.toggleTracked(file.path))
+        );
+      })
+    );
+
     this.addCommand({
       id: "migrate-categories",
       name: "Fold projects into categories (Betaworks / Personal / Health)",
@@ -127,6 +169,9 @@ export default class SmartTodoPlugin extends Plugin {
 
   onunload(): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    // Don't leave our custom properties on body after we're gone.
+    document.body.style.removeProperty("--stw-accent");
+    document.body.style.removeProperty("--stw-accent-strong");
   }
 
   async loadSettings(): Promise<void> {
@@ -135,6 +180,67 @@ export default class SmartTodoPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    this.applyAccent();
+  }
+
+  /**
+   * Put the accent on `document.body`, not just the panel.
+   *
+   * Modals mount into `.modal-container` at body level — outside the view's
+   * DOM entirely. With the properties set only on the panel, every
+   * `var(--stw-accent)` inside the sweep screen resolved to nothing: no
+   * progress ring, a grey badge instead of an accent one, and a "Done" button
+   * whose background vanished, leaving white text on white. Setting them on
+   * body covers every surface the plugin draws, modal or not.
+   */
+  private applyAccent(): void {
+    applyAccentVars(document.body, this.settings.accent);
+  }
+
+  /**
+   * Add or remove a note from the managed scope.
+   *
+   * Nothing is copied: the note keeps its own checkboxes and the panel edits
+   * them in place, so ticking "Buy peanut oil" in Smart ToDo ticks it on the
+   * Turkey Fry Prep page, and ticking it on the page updates the panel. That
+   * also means untracking is free — it only stops the scan, it never touches
+   * the note.
+   */
+  async toggleTracked(path: string): Promise<void> {
+    if (samePath(path, this.primaryFile)) {
+      new Notice("Smart ToDo: this is the main task file — it's always tracked.", 4000);
+      return;
+    }
+
+    const tracked = scopeIncludesPath(this.settings.managedFiles, path);
+    this.settings.managedFiles = tracked
+      ? removePathFromScope(this.settings.managedFiles, path)
+      : addPathToScope(this.settings.managedFiles, path);
+    await this.saveSettings();
+    this.refreshViews();
+
+    const name = path.split("/").pop() ?? path;
+    if (tracked) {
+      new Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4000);
+      return;
+    }
+
+    // Count what actually arrived. "Tracking it" with nothing to show reads as
+    // a failure, so say when a note has no open checkboxes rather than leaving
+    // the user hunting the panel for tasks that were never there.
+    const open = (await this.scan()).filter(
+      (t) => samePath(t.filePath, path) && t.status === "open"
+    );
+    if (open.length === 0) {
+      new Notice(`Smart ToDo: tracking ${name} — no open tasks in it yet.`, 5000);
+      return;
+    }
+    const unsized = open.filter((t) => !t.effort).length;
+    new Notice(
+      `Smart ToDo: tracking ${name} — ${open.length} open task${open.length === 1 ? "" : "s"}.` +
+        (unsized > 0 ? ` ${unsized} unsized, so size them to see them under a time budget.` : ""),
+      6000
+    );
   }
 
   /** The managed scope as currently configured. */

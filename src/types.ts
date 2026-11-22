@@ -230,6 +230,21 @@ export const ACCENTS: Record<Accent, { label: string; base: string; strong: stri
   slate: { label: "Slate", base: "hsl(215, 25%, 35%)", strong: "hsl(215, 28%, 25%)" },
 };
 
+/**
+ * Write the accent custom properties onto an element.
+ *
+ * This belongs on `document.body`, not on the panel. Obsidian mounts modals in
+ * `.modal-container` at body level, *outside* the view's DOM — so properties
+ * set on the panel never reached the sweep screen, and every `var(--stw-accent)`
+ * there resolved to nothing: no progress ring, no accent badge, and a "Done"
+ * button rendering white-on-white because its background had vanished.
+ */
+export function applyAccentVars(el: HTMLElement, accent: Accent): void {
+  const def = ACCENTS[accent] ?? ACCENTS.omnifocus;
+  el.style.setProperty("--stw-accent", def.base);
+  el.style.setProperty("--stw-accent-strong", def.strong);
+}
+
 // --- Managed scope -------------------------------------------------------
 //
 // Smart ToDo is opt-in by design. The vault holds thousands of legacy open

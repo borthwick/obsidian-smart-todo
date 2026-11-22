@@ -524,6 +524,31 @@
   color: var(--text-muted);
 }
 
+/* Source of a task pulled in from a tracked project note. Quieter than the
+   category chip — it's provenance, not a decision you need to make. */
+.stw-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 11em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.stw-source-chip:hover {
+  color: var(--stw-accent);
+}
+.stw-source-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.stw-source-icon .svg-icon {
+  width: 11px;
+  height: 11px;
+}
+
 .stw-cat-chip {
   display: inline-flex;
   align-items: center;

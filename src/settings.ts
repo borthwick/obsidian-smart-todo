@@ -74,7 +74,10 @@ export class SmartTodoSettingTab extends PluginSettingTab {
       .setDesc(
         "Comma-separated. An entry ending in .md is a single file; anything " +
           "else is treated as a folder and all .md files under it are included. " +
-          `Example: "${DEFAULT_MANAGED_FILE}, Projects/Tasks"`
+          `Example: "${DEFAULT_MANAGED_FILE}, Projects/Tasks". ` +
+          // Nobody should have to hand-type a path with an emoji in it.
+          "To add a project note, right-click it and choose " +
+          '"Smart ToDo: track tasks in this note" instead of typing it here.'
       )
       .addTextArea((text) => {
         text

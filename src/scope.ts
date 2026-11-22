@@ -111,6 +111,51 @@ export function primaryManagedFile(scope: ManagedScope): string {
   return DEFAULT_MANAGED_FILE;
 }
 
+// --- Editing the scope from outside settings -----------------------------
+//
+// Project notes are the common case for widening scope: a Thanksgiving prep
+// checklist, a launch plan, a trip list. Each is a handful of checkboxes that
+// want to be in the panel for a week and then stop mattering. Making that a
+// trip to a settings textarea to hand-type a path guarantees it doesn't
+// happen — so these back a command and a right-click entry on the note.
+//
+// They work on the raw setting string rather than the parsed scope so the
+// user's own formatting (commas vs lines, their ordering) survives a toggle,
+// and so the *first* entry — which is the capture target — never moves.
+
+/** Split the raw setting the way parseScope does, but keep the separator. */
+function rawEntries(raw: string | undefined | null): string[] {
+  return (raw ?? "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
+}
+
+/** Is this exact path already named in the raw setting? */
+export function scopeIncludesPath(raw: string | undefined | null, path: string): boolean {
+  const needle = normalizePath(path).toLowerCase();
+  return rawEntries(raw).some((p) => p.toLowerCase() === needle);
+}
+
+/**
+ * Append `path` to the scope. Appends rather than prepends on purpose: the
+ * first file entry is where new captures land, and tracking a project note
+ * must never hijack that.
+ */
+export function addPathToScope(raw: string | undefined | null, path: string): string {
+  const clean = normalizePath(path);
+  if (!clean || scopeIncludesPath(raw, clean)) return raw ?? "";
+  const existing = (raw ?? "").trim();
+  if (!existing) return clean;
+  // Match whatever separator is already in use so a line-per-entry list stays
+  // a line-per-entry list.
+  return existing.includes("\n") ? `${existing}\n${clean}` : `${existing}, ${clean}`;
+}
+
+/** Remove `path` from the scope, leaving every other entry as written. */
+export function removePathFromScope(raw: string | undefined | null, path: string): string {
+  const needle = normalizePath(path).toLowerCase();
+  const kept = rawEntries(raw).filter((p) => p.toLowerCase() !== needle);
+  return (raw ?? "").includes("\n") ? kept.join("\n") : kept.join(", ");
+}
+
 /** Human-readable scope summary for the settings tab and the empty state. */
 export function describeScope(scope: ManagedScope): string {
   return scope.entries

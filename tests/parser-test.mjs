@@ -545,7 +545,7 @@ check("title survives", cleared.includes("Email Vinneth at Plastic re: FDA"), tr
 
 const { insertIndexFor, buildInsertedContent, buildKeptContent, buildDroppedLine, locateTaskLine } =
   mod.writer;
-const { samePath } = mod.scope;
+const { samePath, addPathToScope, removePathFromScope, scopeIncludesPath } = mod.scope;
 
 console.log("\n[samePath — the inbox match, hand-typed and case-insensitive]");
 check("identical", samePath("a/Task inbox.md", "a/Task inbox.md"), true);
@@ -651,6 +651,56 @@ check("stream id survives — or the bridge re-adds it", /\[stream:: 7f3c-aa\]/.
 check("title survives", droppedTask.title, "call the propane place");
 check("one dropped field only", (droppedLine.match(/dropped::/g) || []).length, 1);
 check("an ordinary done line has no dropped date", parseTasksFromContent("- [x] x ✅ 2026-11-01", "T.md")[0].dropped, null);
+
+// ======================================================================
+// 0.9.1 — tracking a project note: scope edits that keep the user's text.
+// ======================================================================
+
+const TRACKER = "3. Evergreen & fleeting Notes/Task tracker.md";
+const INBOX = "3. Evergreen & fleeting Notes/Task inbox.md";
+const TURKEY = "4. Projects/Turkey Fry Prep — Thanksgiving 2026 🦃.md";
+const commaScope = `${TRACKER}, ${INBOX}`;
+
+console.log("\n[addPathToScope — append, never displace the capture target]");
+const widened = addPathToScope(commaScope, TURKEY);
+check("note added", scopeIncludesPath(widened, TURKEY), true);
+check("comma format kept", widened, `${commaScope}, ${TURKEY}`);
+check("tracker is still first, so capture still lands there", parseScope(widened).entries[0].path, TRACKER);
+check("three entries", parseScope(widened).entries.length, 3);
+check("still a file entry, not a folder", parseScope(widened).entries[2].kind, "file");
+check("adding twice is a no-op", addPathToScope(widened, TURKEY), widened);
+check("case-insensitive, so no near-duplicate", addPathToScope(widened, TURKEY.toUpperCase()), widened);
+check("blank scope → just the path", addPathToScope("", TURKEY), TURKEY);
+check("blank scope, undefined setting", addPathToScope(undefined, TURKEY), TURKEY);
+check("a line-per-entry list stays lines", addPathToScope(`${TRACKER}\n${INBOX}`, TURKEY), `${TRACKER}\n${INBOX}\n${TURKEY}`);
+check("empty path is rejected", addPathToScope(commaScope, "   "), commaScope);
+
+console.log("\n[removePathFromScope — stop scanning, touch nothing else]");
+check("note gone", scopeIncludesPath(removePathFromScope(widened, TURKEY), TURKEY), false);
+check("the others survive verbatim", removePathFromScope(widened, TURKEY), commaScope);
+check("case-insensitive removal", removePathFromScope(widened, TURKEY.toUpperCase()), commaScope);
+check("removing something absent is a no-op", removePathFromScope(commaScope, "nope.md"), commaScope);
+check("lines stay lines", removePathFromScope(`${TRACKER}\n${INBOX}\n${TURKEY}`, TURKEY), `${TRACKER}\n${INBOX}`);
+// Emptying the scope must fall back to the default file, never the whole vault.
+check("emptied scope falls back rather than opening up", parseScope(removePathFromScope(TURKEY, TURKEY)).usedFallback, true);
+
+console.log("\n[scopeIncludesPath — exact entries only, not folder coverage]");
+check("named file", scopeIncludesPath(commaScope, INBOX), true);
+check("a file inside a named folder is in scope but not an entry", scopeIncludesPath("4. Projects", TURKEY), false);
+check("blank scope includes nothing", scopeIncludesPath("", TRACKER), false);
+
+console.log("\n[tracked project note — tasks parse and stay addressable]");
+const turkeyTasks = parseTasksFromContent(
+  ["## 🛒 Shopping list", "- [ ] Propane", "- [x] Turkey ✅ 2026-11-21", "- [ ] Peanut oil"].join("\n"),
+  TURKEY
+);
+check("only the real checkboxes", turkeyTasks.length, 3);
+check("open ones counted", turkeyTasks.filter((t) => t.status === "open").length, 2);
+check("already-ticked stays ticked", turkeyTasks[1].status, "done");
+check("unsized, so budget-filtered to Any", turkeyTasks[0].effort, null);
+check("file path recorded for the source chip", turkeyTasks[0].filePath, TURKEY);
+check("in scope once tracked", mod.scope.isInScope(TURKEY, parseScope(widened)), true);
+check("out of scope once untracked", mod.scope.isInScope(TURKEY, parseScope(commaScope)), false);
 
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`

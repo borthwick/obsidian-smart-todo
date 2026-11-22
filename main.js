@@ -105,6 +105,12 @@ var ACCENTS = {
   green: { label: "Forest green", base: "hsl(149, 61%, 20%)", strong: "hsl(149, 61%, 14%)" },
   slate: { label: "Slate", base: "hsl(215, 25%, 35%)", strong: "hsl(215, 28%, 25%)" }
 };
+function applyAccentVars(el, accent) {
+  var _a;
+  const def = (_a = ACCENTS[accent]) != null ? _a : ACCENTS.omnifocus;
+  el.style.setProperty("--stw-accent", def.base);
+  el.style.setProperty("--stw-accent-strong", def.strong);
+}
 var DEFAULT_MANAGED_FILE = "Tasks.md";
 var DEFAULT_SETTINGS = {
   managedFiles: DEFAULT_MANAGED_FILE,
@@ -234,6 +240,28 @@ function primaryManagedFile(scope) {
   if (folder)
     return `${folder.path}/${DEFAULT_MANAGED_FILE}`;
   return DEFAULT_MANAGED_FILE;
+}
+function rawEntries(raw) {
+  return (raw != null ? raw : "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
+}
+function scopeIncludesPath(raw, path) {
+  const needle = normalizePath(path).toLowerCase();
+  return rawEntries(raw).some((p) => p.toLowerCase() === needle);
+}
+function addPathToScope(raw, path) {
+  const clean = normalizePath(path);
+  if (!clean || scopeIncludesPath(raw, clean))
+    return raw != null ? raw : "";
+  const existing = (raw != null ? raw : "").trim();
+  if (!existing)
+    return clean;
+  return existing.includes("\n") ? `${existing}
+${clean}` : `${existing}, ${clean}`;
+}
+function removePathFromScope(raw, path) {
+  const needle = normalizePath(path).toLowerCase();
+  const kept = rawEntries(raw).filter((p) => p.toLowerCase() !== needle);
+  return (raw != null ? raw : "").includes("\n") ? kept.join("\n") : kept.join(", ");
 }
 function describeScope(scope) {
   return scope.entries.map((e) => e.kind === "folder" ? `${e.path}/ (folder)` : e.path).join(", ");
@@ -398,7 +426,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     };
     new import_obsidian.Setting(el).setName("Managed files").setDesc(
-      `Comma-separated. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}, Projects/Tasks"`
+      `Comma-separated. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}, Projects/Tasks". To add a project note, right-click it and choose "Smart ToDo: track tasks in this note" instead of typing it here.`
     ).addTextArea((text) => {
       text.setPlaceholder(DEFAULT_MANAGED_FILE).setValue(this.plugin.settings.managedFiles).onChange(async (value) => {
         this.plugin.settings.managedFiles = value;
@@ -1823,12 +1851,13 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     var _a;
     (_a = this.containerEl.children[1]) == null ? void 0 : _a.empty();
   }
-  /** Accent lives in CSS custom properties so one setting repaints everything. */
+  /**
+   * Accent lives in CSS custom properties so one setting repaints everything.
+   * Set here *and* on document.body by the plugin — the panel keeps working if
+   * something resets body, and modals (mounted outside this tree) inherit.
+   */
   applyAccent(root) {
-    var _a;
-    const accent = (_a = ACCENTS[this.plugin.settings.accent]) != null ? _a : ACCENTS.blue;
-    root.style.setProperty("--stw-accent", accent.base);
-    root.style.setProperty("--stw-accent-strong", accent.strong);
+    applyAccentVars(root, this.plugin.settings.accent);
   }
   /** Repaint from scratch — used when a setting changes shape, not just data. */
   rebuild() {
@@ -2458,6 +2487,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
     const meta = main.createDiv({ cls: "stw-task-meta" });
     this.renderCategoryChip(meta, task);
+    this.renderSourceChip(meta, task);
     this.renderEffortPill(meta, task);
     if (task.due) {
       meta.createSpan({ cls: "stw-date", text: this.humanDate(task.due, today) });
@@ -2573,6 +2603,34 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       })
     );
     menu.showAtMouseEvent(evt);
+  }
+  /**
+   * Where a task came from, when that isn't obvious.
+   *
+   * Most rows live in the tracker or the inbox and naming the file would be
+   * noise on every line. A task pulled in from a tracked project note is
+   * different: "Buy peanut oil" makes sense only once you know it's from the
+   * Turkey Fry Prep page, and ticking it here ticks the checkbox *there*, so
+   * the panel should say so. Clicking jumps to the line.
+   */
+  renderSourceChip(parent, task) {
+    var _a, _b;
+    if (samePath(task.filePath, this.plugin.primaryFile))
+      return;
+    if (samePath(task.filePath, this.plugin.inboxPath))
+      return;
+    const name = (_b = (_a = task.filePath.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/i, "")) != null ? _b : task.filePath;
+    const chip = parent.createSpan({
+      cls: "stw-source-chip",
+      attr: { "aria-label": `From ${task.filePath} \u2014 click to open` }
+    });
+    (0, import_obsidian7.setIcon)(chip.createSpan({ cls: "stw-source-icon" }), "file-text");
+    chip.createSpan({ text: name });
+    chip.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void this.revealTask(task);
+    });
   }
   renderCategoryChip(parent, task) {
     const chip = parent.createSpan({ cls: "stw-cat-chip" });
@@ -2760,6 +2818,7 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
   }
   async onload() {
     await this.loadSettings();
+    this.applyAccent();
     this.registerView(
       VIEW_TYPE_SMART_TODO,
       (leaf) => new SmartTodoView(leaf, this)
@@ -2804,6 +2863,31 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       }
     });
     this.addCommand({
+      id: "track-active-note",
+      name: "Track tasks in this note",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md")
+          return false;
+        if (checking)
+          return true;
+        void this.toggleTracked(file.path);
+        return true;
+      }
+    });
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (!(file instanceof import_obsidian9.TFile) || file.extension !== "md")
+          return;
+        if (samePath(file.path, this.primaryFile))
+          return;
+        const tracked = scopeIncludesPath(this.settings.managedFiles, file.path);
+        menu.addItem(
+          (item) => item.setTitle(tracked ? "Smart ToDo: stop tracking tasks here" : "Smart ToDo: track tasks in this note").setIcon("list-checks").onClick(() => void this.toggleTracked(file.path))
+        );
+      })
+    );
+    this.addCommand({
       id: "migrate-categories",
       name: "Fold projects into categories (Betaworks / Personal / Health)",
       callback: () => void this.openCategoryMigration()
@@ -2829,12 +2913,65 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
   onunload() {
     if (this.refreshTimer)
       clearTimeout(this.refreshTimer);
+    document.body.style.removeProperty("--stw-accent");
+    document.body.style.removeProperty("--stw-accent-strong");
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
   async saveSettings() {
     await this.saveData(this.settings);
+    this.applyAccent();
+  }
+  /**
+   * Put the accent on `document.body`, not just the panel.
+   *
+   * Modals mount into `.modal-container` at body level — outside the view's
+   * DOM entirely. With the properties set only on the panel, every
+   * `var(--stw-accent)` inside the sweep screen resolved to nothing: no
+   * progress ring, a grey badge instead of an accent one, and a "Done" button
+   * whose background vanished, leaving white text on white. Setting them on
+   * body covers every surface the plugin draws, modal or not.
+   */
+  applyAccent() {
+    applyAccentVars(document.body, this.settings.accent);
+  }
+  /**
+   * Add or remove a note from the managed scope.
+   *
+   * Nothing is copied: the note keeps its own checkboxes and the panel edits
+   * them in place, so ticking "Buy peanut oil" in Smart ToDo ticks it on the
+   * Turkey Fry Prep page, and ticking it on the page updates the panel. That
+   * also means untracking is free — it only stops the scan, it never touches
+   * the note.
+   */
+  async toggleTracked(path) {
+    var _a;
+    if (samePath(path, this.primaryFile)) {
+      new import_obsidian9.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
+      return;
+    }
+    const tracked = scopeIncludesPath(this.settings.managedFiles, path);
+    this.settings.managedFiles = tracked ? removePathFromScope(this.settings.managedFiles, path) : addPathToScope(this.settings.managedFiles, path);
+    await this.saveSettings();
+    this.refreshViews();
+    const name = (_a = path.split("/").pop()) != null ? _a : path;
+    if (tracked) {
+      new import_obsidian9.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);
+      return;
+    }
+    const open = (await this.scan()).filter(
+      (t) => samePath(t.filePath, path) && t.status === "open"
+    );
+    if (open.length === 0) {
+      new import_obsidian9.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
+      return;
+    }
+    const unsized = open.filter((t) => !t.effort).length;
+    new import_obsidian9.Notice(
+      `Smart ToDo: tracking ${name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.` + (unsized > 0 ? ` ${unsized} unsized, so size them to see them under a time budget.` : ""),
+      6e3
+    );
   }
   /** The managed scope as currently configured. */
   get scope() {
