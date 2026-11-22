@@ -1237,19 +1237,35 @@ function matchesHorizon(task, horizon, today = startOfToday()) {
       return true;
   }
 }
+function matchesSearch(tasks, search) {
+  const needle = search.trim().toLowerCase();
+  if (!needle)
+    return [];
+  return tasks.filter((t) => t.title.toLowerCase().includes(needle));
+}
 function selectTasks(tasks, query, today = startOfToday()) {
   const needle = query.search.trim().toLowerCase();
+  const everywhere = !!needle && !!query.searchEverywhere;
   const out = tasks.filter((t) => {
+    if (needle && !t.title.toLowerCase().includes(needle))
+      return false;
+    if (everywhere)
+      return true;
     if (!matchesHorizon(t, query.horizon, today))
       return false;
     if (!matchesCategory(t, query.category))
       return false;
     if (!fitsBudget(t, query.budget))
       return false;
-    if (needle && !t.title.toLowerCase().includes(needle))
-      return false;
     return true;
   });
+  if (everywhere) {
+    return out.sort((a, b) => {
+      if (a.status !== b.status)
+        return a.status === "open" ? -1 : 1;
+      return a.status === "open" ? compareForToday(a, b, today) : compareCompleted(a, b);
+    });
+  }
   return query.horizon === "done" ? out.sort(compareCompleted) : out.sort((a, b) => compareForToday(a, b, today));
 }
 function groupByQuadrant(tasks, today = startOfToday()) {
@@ -1831,6 +1847,8 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     this.budget = "any";
     this.category = "all";
     this.search = "";
+    /** Set by "Search all tasks" in the empty state; cleared with the search box. */
+    this.searchEverywhere = false;
     this.tasks = [];
     this.loading = false;
     /** Inbox bucket expanded? Collapsed is a legitimate "not now", not a hide. */
@@ -1926,6 +1944,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     });
     this.searchInputEl.addEventListener("input", () => {
       this.search = this.searchInputEl.value;
+      this.searchEverywhere = false;
       this.renderFilters();
       this.render();
     });
@@ -1933,6 +1952,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       if (evt.key === "Escape") {
         this.searchInputEl.value = "";
         this.search = "";
+        this.searchEverywhere = false;
         this.searchInputEl.blur();
         this.renderFilters();
         this.render();
@@ -1951,13 +1971,27 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     this.searchInputEl.focus();
     this.searchInputEl.select();
   }
-  /** Enter in the search box with text that matches nothing → create it. */
+  /**
+   * Enter in the search box with text that matches nothing → create it.
+   *
+   * "Matches nothing" has to mean nothing *anywhere*, not nothing under the
+   * current filters. Searching "gala" from Today finds no open dated task and
+   * used to offer to create one — while three gala lines sat in the note, two
+   * ticked and one undated. Pressing Enter there would have written a
+   * duplicate of a task that already existed, which is the one thing a to-do
+   * list must never do to you. So Enter reveals the match first; it only
+   * captures when the vault really has nothing.
+   */
   async captureFromSearch() {
     const value = this.searchInputEl.value.trim();
     if (!value)
       return;
     if (this.visibleTasks().length > 0)
       return;
+    if (matchesSearch(this.listTasks, value).length > 0) {
+      this.showAllMatches();
+      return;
+    }
     const ok = await this.plugin.addTask(value);
     if (ok) {
       this.searchInputEl.value = "";
@@ -2101,8 +2135,15 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       // is the run-through of it. Lanes show every size side by side.
       budget: this.mode === "lanes" ? "any" : this.budget,
       category: this.category,
-      search: this.search
+      search: this.search,
+      searchEverywhere: this.searchEverywhere
     };
+  }
+  /** Drop the filters for the current search term and repaint. */
+  showAllMatches() {
+    this.searchEverywhere = true;
+    this.renderFilters();
+    this.render();
   }
   /**
    * The working list: everything the panel's filters apply to.
@@ -2172,15 +2213,82 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       } else {
         this.renderEmpty();
       }
+      if (!this.search.trim())
+        this.renderUndatedHint();
       return;
     }
+    if (this.searchEverywhere)
+      this.renderSearchScopeNote(tasks);
     if (this.mode === "lanes")
       this.renderLanes(tasks, today);
     else if (this.mode === "sweep")
       this.renderSweep(tasks, today);
     else
       this.renderFocus(tasks, today);
-    this.renderUndatedHint();
+    if (!this.searchEverywhere)
+      this.renderUndatedHint();
+    this.renderSearchElsewhereHint(tasks);
+  }
+  /** Banner for unfiltered search: the chips above are not in force. */
+  renderSearchScopeNote(tasks) {
+    const note = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    const done = tasks.filter((t) => t.status === "done").length;
+    note.createSpan({
+      text: `Every match for "${this.search.trim()}" \u2014 When and effort filters are off` + (done > 0 ? `, including ${done} completed.` : ".")
+    });
+    const btn = note.createEl("button", { cls: "stw-undated-btn", text: "Back to filters" });
+    btn.addEventListener("click", () => {
+      this.searchEverywhere = false;
+      this.renderFilters();
+      this.render();
+    });
+  }
+  /**
+   * The list has matches, but so does the rest of the vault.
+   *
+   * Without this, a search that finds one of three gala tasks looks complete.
+   * The count is the whole point: it's the difference between "that's all of
+   * it" and "there's more, one click away".
+   */
+  renderSearchElsewhereHint(shown) {
+    if (!this.search.trim() || this.searchEverywhere)
+      return;
+    const all = matchesSearch(this.listTasks, this.search);
+    const hidden = all.length - shown.length;
+    if (hidden <= 0)
+      return;
+    const hint = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    hint.createSpan({
+      text: `${hidden} more match${hidden === 1 ? "" : "es"} outside ${this.horizonLabel()} \u2014 ${this.describeMatches(all.filter((t) => !shown.includes(t))) || "filtered out"}.`
+    });
+    const btn = hint.createEl("button", { cls: "stw-undated-btn", text: "Show all matches" });
+    btn.addEventListener("click", () => this.showAllMatches());
+  }
+  horizonLabel() {
+    switch (this.horizon) {
+      case "today":
+        return "Today";
+      case "week":
+        return "This week";
+      case "done":
+        return "Done";
+      default:
+        return "the current filters";
+    }
+  }
+  /** "2 completed, 1 with no due date" — why those matches aren't on the list. */
+  describeMatches(tasks) {
+    const done = tasks.filter((t) => t.status === "done").length;
+    const undated = tasks.filter((t) => t.status === "open" && !t.due).length;
+    const other = tasks.length - done - undated;
+    const parts = [];
+    if (done > 0)
+      parts.push(`${done} completed`);
+    if (undated > 0)
+      parts.push(`${undated} with no due date`);
+    if (other > 0)
+      parts.push(`${other} dated outside the window`);
+    return parts.join(", ");
   }
   /**
    * Say what the When filter is holding back.
@@ -2303,7 +2411,22 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       return;
     }
     if (this.search.trim()) {
-      empty.createDiv({ cls: "stw-empty-head", text: `Nothing matches "${this.search.trim()}".` });
+      const term = this.search.trim();
+      const elsewhere = this.searchEverywhere ? [] : matchesSearch(this.listTasks, term);
+      if (elsewhere.length > 0) {
+        empty.createDiv({
+          cls: "stw-empty-head",
+          text: `No "${term}" under ${this.horizonLabel()}.`
+        });
+        empty.createDiv({
+          cls: "stw-empty-note",
+          text: `${elsewhere.length} match${elsewhere.length === 1 ? "" : "es"} elsewhere \u2014 ${this.describeMatches(elsewhere) || "filtered out"}.`
+        });
+        const btn = empty.createEl("button", { cls: "stw-btn", text: "Show all matches" });
+        btn.addEventListener("click", () => this.showAllMatches());
+        return;
+      }
+      empty.createDiv({ cls: "stw-empty-head", text: `Nothing matches "${term}".` });
       empty.createDiv({ cls: "stw-empty-note", text: "Press Enter to add it as a task." });
       return;
     }

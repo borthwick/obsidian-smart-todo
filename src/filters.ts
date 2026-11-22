@@ -195,6 +195,23 @@ export interface PanelQuery {
   category: CategoryFilter;
   /** Free text from the search box; empty string means no text filter. */
   search: string;
+  /**
+   * Search the whole working set instead of the filtered one.
+   *
+   * Off by default, because the chips have to stay honest: what they say is
+   * what the list shows. But a search that only looks inside Today is a search
+   * that can't find a finished task or an undated one, and reports "nothing"
+   * for a task sitting two lines up in the note. This is the escape hatch the
+   * empty state offers once it knows the match is elsewhere.
+   */
+  searchEverywhere?: boolean;
+}
+
+/** Every task whose title contains `needle` — no horizon, budget or category. */
+export function matchesSearch(tasks: SmartTask[], search: string): SmartTask[] {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return [];
+  return tasks.filter((t) => t.title.toLowerCase().includes(needle));
 }
 
 /**
@@ -209,13 +226,27 @@ export function selectTasks(
   today = startOfToday()
 ): SmartTask[] {
   const needle = query.search.trim().toLowerCase();
+  const everywhere = !!needle && !!query.searchEverywhere;
+
   const out = tasks.filter((t) => {
+    if (needle && !t.title.toLowerCase().includes(needle)) return false;
+    if (everywhere) return true;
     if (!matchesHorizon(t, query.horizon, today)) return false;
     if (!matchesCategory(t, query.category)) return false;
     if (!fitsBudget(t, query.budget)) return false;
-    if (needle && !t.title.toLowerCase().includes(needle)) return false;
     return true;
   });
+
+  // Unfiltered search is the one selection that mixes open and finished work,
+  // so it needs its own order: live tasks first in triage order, history after
+  // in reverse-completion order. Neither comparator can do that alone.
+  if (everywhere) {
+    return out.sort((a, b) => {
+      if (a.status !== b.status) return a.status === "open" ? -1 : 1;
+      return a.status === "open" ? compareForToday(a, b, today) : compareCompleted(a, b);
+    });
+  }
+
   return query.horizon === "done"
     ? out.sort(compareCompleted)
     : out.sort((a, b) => compareForToday(a, b, today));

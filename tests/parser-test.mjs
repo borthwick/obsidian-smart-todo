@@ -792,6 +792,52 @@ check("rawText keeps its markdown", boldTask.rawText, "- [ ] **Propane** [effort
 check("title keeps its markdown too", boldTask.title, "**Propane**");
 check("only the display form is stripped", displayTitle(boldTask.title), "Propane");
 
+console.log("\n[search is scoped to the filters — and has to say so]");
+{
+  // John, 2026-11-22: "Why are there items in the task list that dont show up
+  // in the plugin when I search (ie: gala)". Three gala lines in the tracker,
+  // panel on Today, search box reading "gala", body reading "Nothing matches".
+  const { selectTasks, matchesSearch } = mod.filters;
+  const REAL = mod.writer.startOfToday();
+  const gala = parseTasksFromContent(
+    [
+      "- [x] send final invites to the gala \u{1F4C5} 2026-11-17 [pushes:: 3] \u2705 2026-11-15",
+      "- [x] send final invites to NYPR gala \u2705 2026-11-14",
+      "- [ ] send final gala invites tomorrow",
+      "- [ ] book the car \u{1F4C5} 2026-11-01 [effort:: light]",
+    ].join("\n"),
+    "Task tracker.md"
+  );
+  const q = (over = {}) => ({
+    horizon: "today",
+    budget: "any",
+    category: "all",
+    search: "gala",
+    ...over,
+  });
+
+  check("Today + 'gala' selects nothing — exactly what he saw", selectTasks(gala, q(), REAL).length, 0);
+  check("while three gala tasks are sitting right there", matchesSearch(gala, "gala").length, 3);
+  check("two of them are finished", matchesSearch(gala, "gala").filter((t) => t.status === "done").length, 2);
+  check("and the open one has no due date, which is why Today drops it", matchesSearch(gala, "gala").filter((t) => t.status === "open" && !t.due).length, 1);
+
+  const everywhere = selectTasks(gala, q({ searchEverywhere: true }), REAL);
+  check("searching everywhere finds all three", everywhere.length, 3);
+  check("live work sorts above history", everywhere[0].status, "open");
+  check("the open match is the undated line", everywhere[0].title, "send final gala invites tomorrow");
+  check("history is newest-completed first", everywhere[1].title, "send final invites to the gala");
+  check("and the unrelated task stays out of a search", everywhere.some((t) => t.title.includes("car")), false);
+
+  // Guard rails: the escape hatch must not leak into the unsearched list, or
+  // every chip in the panel quietly stops meaning anything.
+  const plainToday = selectTasks(gala, q({ search: "" }), REAL);
+  const flaggedNoNeedle = selectTasks(gala, q({ search: "", searchEverywhere: true }), REAL);
+  check("searchEverywhere with an empty box changes nothing", flaggedNoNeedle.length, plainToday.length);
+  check("a genuinely absent term still finds nothing", matchesSearch(gala, "propane").length, 0);
+  check("search is case-insensitive", matchesSearch(gala, "GALA").length, 3);
+  check("so the empty state can tell the two apart", matchesSearch(gala, "propane").length === 0 && matchesSearch(gala, "gala").length > 0, true);
+}
+
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`
 );

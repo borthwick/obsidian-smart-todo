@@ -30,6 +30,7 @@ import {
   isUnjudged,
   matchesCategory,
   matchesHorizon,
+  matchesSearch,
   quadrantOf,
   selectTasks,
 } from "./filters";
@@ -88,6 +89,8 @@ export class SmartTodoView extends ItemView {
   budget: Budget = "any";
   category: CategoryFilter = "all";
   search = "";
+  /** Set by "Search all tasks" in the empty state; cleared with the search box. */
+  searchEverywhere = false;
 
   tasks: SmartTask[] = [];
   loading = false;
@@ -210,6 +213,9 @@ export class SmartTodoView extends ItemView {
 
     this.searchInputEl.addEventListener("input", () => {
       this.search = this.searchInputEl.value;
+      // A new search starts scoped again. Carrying "everywhere" over to the
+      // next word would silently disable the chips for the rest of the session.
+      this.searchEverywhere = false;
       this.renderFilters();
       this.render();
     });
@@ -217,6 +223,7 @@ export class SmartTodoView extends ItemView {
       if (evt.key === "Escape") {
         this.searchInputEl.value = "";
         this.search = "";
+        this.searchEverywhere = false;
         this.searchInputEl.blur();
         this.renderFilters();
         this.render();
@@ -240,11 +247,25 @@ export class SmartTodoView extends ItemView {
     this.searchInputEl.select();
   }
 
-  /** Enter in the search box with text that matches nothing → create it. */
+  /**
+   * Enter in the search box with text that matches nothing → create it.
+   *
+   * "Matches nothing" has to mean nothing *anywhere*, not nothing under the
+   * current filters. Searching "gala" from Today finds no open dated task and
+   * used to offer to create one — while three gala lines sat in the note, two
+   * ticked and one undated. Pressing Enter there would have written a
+   * duplicate of a task that already existed, which is the one thing a to-do
+   * list must never do to you. So Enter reveals the match first; it only
+   * captures when the vault really has nothing.
+   */
   private async captureFromSearch(): Promise<void> {
     const value = this.searchInputEl.value.trim();
     if (!value) return;
     if (this.visibleTasks().length > 0) return; // it's a filter, not a capture
+    if (matchesSearch(this.listTasks, value).length > 0) {
+      this.showAllMatches();
+      return;
+    }
     const ok = await this.plugin.addTask(value);
     if (ok) {
       this.searchInputEl.value = "";
@@ -409,7 +430,15 @@ export class SmartTodoView extends ItemView {
       budget: this.mode === "lanes" ? "any" : this.budget,
       category: this.category,
       search: this.search,
+      searchEverywhere: this.searchEverywhere,
     };
+  }
+
+  /** Drop the filters for the current search term and repaint. */
+  private showAllMatches(): void {
+    this.searchEverywhere = true;
+    this.renderFilters();
+    this.render();
   }
 
   /**
@@ -489,14 +518,86 @@ export class SmartTodoView extends ItemView {
       } else {
         this.renderEmpty();
       }
+      // The empty state explains a *search* itself, in terms of the term you
+      // typed. Everything else still needs the filter hint, which used to be
+      // skipped here — the one place a dead-end list most needed a reason.
+      if (!this.search.trim()) this.renderUndatedHint();
       return;
     }
+
+    if (this.searchEverywhere) this.renderSearchScopeNote(tasks);
 
     if (this.mode === "lanes") this.renderLanes(tasks, today);
     else if (this.mode === "sweep") this.renderSweep(tasks, today);
     else this.renderFocus(tasks, today);
 
-    this.renderUndatedHint();
+    if (!this.searchEverywhere) this.renderUndatedHint();
+    this.renderSearchElsewhereHint(tasks);
+  }
+
+  /** Banner for unfiltered search: the chips above are not in force. */
+  private renderSearchScopeNote(tasks: SmartTask[]): void {
+    const note = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    const done = tasks.filter((t) => t.status === "done").length;
+    note.createSpan({
+      text:
+        `Every match for "${this.search.trim()}" — When and effort filters are off` +
+        (done > 0 ? `, including ${done} completed.` : "."),
+    });
+    const btn = note.createEl("button", { cls: "stw-undated-btn", text: "Back to filters" });
+    btn.addEventListener("click", () => {
+      this.searchEverywhere = false;
+      this.renderFilters();
+      this.render();
+    });
+  }
+
+  /**
+   * The list has matches, but so does the rest of the vault.
+   *
+   * Without this, a search that finds one of three gala tasks looks complete.
+   * The count is the whole point: it's the difference between "that's all of
+   * it" and "there's more, one click away".
+   */
+  private renderSearchElsewhereHint(shown: SmartTask[]): void {
+    if (!this.search.trim() || this.searchEverywhere) return;
+    const all = matchesSearch(this.listTasks, this.search);
+    const hidden = all.length - shown.length;
+    if (hidden <= 0) return;
+
+    const hint = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    hint.createSpan({
+      text: `${hidden} more match${hidden === 1 ? "" : "es"} outside ${this.horizonLabel()} — ${
+        this.describeMatches(all.filter((t) => !shown.includes(t))) || "filtered out"
+      }.`,
+    });
+    const btn = hint.createEl("button", { cls: "stw-undated-btn", text: "Show all matches" });
+    btn.addEventListener("click", () => this.showAllMatches());
+  }
+
+  private horizonLabel(): string {
+    switch (this.horizon) {
+      case "today":
+        return "Today";
+      case "week":
+        return "This week";
+      case "done":
+        return "Done";
+      default:
+        return "the current filters";
+    }
+  }
+
+  /** "2 completed, 1 with no due date" — why those matches aren't on the list. */
+  private describeMatches(tasks: SmartTask[]): string {
+    const done = tasks.filter((t) => t.status === "done").length;
+    const undated = tasks.filter((t) => t.status === "open" && !t.due).length;
+    const other = tasks.length - done - undated;
+    const parts: string[] = [];
+    if (done > 0) parts.push(`${done} completed`);
+    if (undated > 0) parts.push(`${undated} with no due date`);
+    if (other > 0) parts.push(`${other} dated outside the window`);
+    return parts.join(", ");
   }
 
   /**
@@ -646,7 +747,30 @@ export class SmartTodoView extends ItemView {
     }
 
     if (this.search.trim()) {
-      empty.createDiv({ cls: "stw-empty-head", text: `Nothing matches "${this.search.trim()}".` });
+      const term = this.search.trim();
+      // Search runs *inside* the current filters, so "nothing matches" is only
+      // ever true of this corner of the list. Saying it flat is a lie by
+      // omission — and the "press Enter" that followed it invited a duplicate
+      // of a task that was already there. Count the matches the filters are
+      // holding back, name them, and offer the one click that shows them.
+      const elsewhere = this.searchEverywhere ? [] : matchesSearch(this.listTasks, term);
+      if (elsewhere.length > 0) {
+        empty.createDiv({
+          cls: "stw-empty-head",
+          text: `No "${term}" under ${this.horizonLabel()}.`,
+        });
+        empty.createDiv({
+          cls: "stw-empty-note",
+          text: `${elsewhere.length} match${elsewhere.length === 1 ? "" : "es"} elsewhere — ${
+            this.describeMatches(elsewhere) || "filtered out"
+          }.`,
+        });
+        const btn = empty.createEl("button", { cls: "stw-btn", text: "Show all matches" });
+        btn.addEventListener("click", () => this.showAllMatches());
+        return;
+      }
+
+      empty.createDiv({ cls: "stw-empty-head", text: `Nothing matches "${term}".` });
       empty.createDiv({ cls: "stw-empty-note", text: "Press Enter to add it as a task." });
       return;
     }
