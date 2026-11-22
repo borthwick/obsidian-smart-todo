@@ -22,9 +22,11 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import {
   PanelQuery,
+  SourceGroup,
   estimateMinutes,
   fitsBudget,
   formatDuration,
+  groupBySource,
   groupByQuadrant,
   isResting,
   isUnjudged,
@@ -834,7 +836,8 @@ export class SmartTodoView extends ItemView {
    * the important work is still what you read first.
    */
   private renderFocus(tasks: SmartTask[], today: Date): void {
-    const grouped = groupByQuadrant(tasks, today);
+    const split = groupBySource(tasks, (p) => this.isHomeFile(p));
+    const grouped = groupByQuadrant(split.main, today);
     const quickies = tasks.filter((t) => t.effort === "light");
     let bannerPlaced = false;
 
@@ -865,6 +868,150 @@ export class SmartTodoView extends ItemView {
         bannerPlaced = true;
       }
     }
+
+    // A tracked note's tasks arrive as a set and belong to one piece of work,
+    // so they sit under its name, below the day's own list, and fold away.
+    for (const group of split.groups) this.renderSourceGroup(group, today);
+
+    // The banner is placed inside the first quadrant section — which never
+    // runs when every task came from a project note. Without this, tracking a
+    // note full of three-minute errands loses the one control that batches
+    // them.
+    if (!bannerPlaced && this.plugin.settings.showSweepBanner && quickies.length >= 2) {
+      this.renderSweepBanner(quickies);
+    }
+  }
+
+  /** Tracker and inbox are "home"; anything else is a tracked project note. */
+  private isHomeFile(path: string): boolean {
+    return samePath(path, this.plugin.primaryFile) || samePath(path, this.plugin.inboxPath);
+  }
+
+  /** The heading for a tracked note's group — renamed label, else the filename. */
+  private sourceLabel(path: string): string {
+    const custom = this.plugin.settings.sourceLabels?.[path]?.trim();
+    if (custom) return custom;
+    return path.split("/").pop()?.replace(/\.md$/i, "") ?? path;
+  }
+
+  private isSourceCollapsed(path: string): boolean {
+    return (this.plugin.settings.collapsedSources ?? []).includes(path);
+  }
+
+  /**
+   * One tracked note, folded under its own heading.
+   *
+   * The count stays on the header when it's shut, which is the whole bargain:
+   * folding is "not now", not "gone". Click the header to fold; right-click to
+   * rename it, open the note, or stop tracking.
+   */
+  private renderSourceGroup(group: SourceGroup, today: Date): void {
+    const collapsed = this.isSourceCollapsed(group.path);
+    const label = this.sourceLabel(group.path);
+
+    const head = this.bodyEl.createDiv({
+      cls: `stw-source-head${collapsed ? " is-collapsed" : ""}`,
+    });
+    const caret = head.createSpan({ cls: "stw-source-caret" });
+    setIcon(caret, collapsed ? "chevron-right" : "chevron-down");
+    setIcon(head.createSpan({ cls: "stw-source-head-icon" }), "file-text");
+    head.createSpan({ cls: "stw-source-title", text: label });
+
+    const minutes = estimateMinutes(group.tasks);
+    head.createSpan({
+      cls: "stw-source-tally",
+      text:
+        minutes > 0
+          ? `${group.tasks.length} · ${formatDuration(minutes)}`
+          : String(group.tasks.length),
+    });
+    head.setAttr(
+      "aria-label",
+      `${group.tasks.length} task${group.tasks.length === 1 ? "" : "s"} from ${
+        group.path
+      } — click to ${collapsed ? "expand" : "fold"}, right-click to rename`
+    );
+
+    head.addEventListener("click", () => void this.toggleSource(group.path));
+    head.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((item) =>
+        item
+          .setTitle("Rename this group…")
+          .setIcon("pencil")
+          .onClick(() => this.renameSource(group.path, head))
+      );
+      if (this.plugin.settings.sourceLabels?.[group.path]) {
+        menu.addItem((item) =>
+          item
+            .setTitle("Use the note's name")
+            .setIcon("rotate-ccw")
+            .onClick(() => void this.setSourceLabel(group.path, ""))
+        );
+      }
+      menu.addItem((item) =>
+        item
+          .setTitle("Open the note")
+          .setIcon("file-text")
+          .onClick(() => void this.revealTask(group.tasks[0]))
+      );
+      menu.addItem((item) =>
+        item
+          .setTitle("Stop tracking this note")
+          .setIcon("x")
+          .onClick(() => void this.plugin.toggleTracked(group.path))
+      );
+      menu.showAtMouseEvent(evt as MouseEvent);
+    });
+
+    if (collapsed) return;
+    for (const task of group.tasks) {
+      this.renderRow(this.bodyEl, task, today, { hideSource: true });
+    }
+  }
+
+  private async toggleSource(path: string): Promise<void> {
+    const current = this.plugin.settings.collapsedSources ?? [];
+    this.plugin.settings.collapsedSources = current.includes(path)
+      ? current.filter((p) => p !== path)
+      : [...current, path];
+    await this.plugin.saveSettings();
+    this.render();
+  }
+
+  private async setSourceLabel(path: string, label: string): Promise<void> {
+    const labels = { ...(this.plugin.settings.sourceLabels ?? {}) };
+    // An empty name means "go back to the filename" — storing "" would make
+    // every later read fall through the same check anyway, so drop the key.
+    if (label.trim()) labels[path] = label.trim();
+    else delete labels[path];
+    this.plugin.settings.sourceLabels = labels;
+    await this.plugin.saveSettings();
+    this.render();
+  }
+
+  /** Rename in place: the header becomes an input, Enter commits, Esc cancels. */
+  private renameSource(path: string, head: HTMLElement): void {
+    head.empty();
+    const input = head.createEl("input", {
+      cls: "stw-source-rename",
+      attr: { type: "text", value: this.sourceLabel(path), placeholder: "Group name" },
+    }) as HTMLInputElement;
+    input.addEventListener("click", (evt) => evt.stopPropagation());
+    input.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        void this.setSourceLabel(path, input.value);
+      } else if (evt.key === "Escape") {
+        evt.preventDefault();
+        this.render();
+      }
+    });
+    input.addEventListener("blur", () => void this.setSourceLabel(path, input.value));
+    input.focus();
+    input.select();
   }
 
   /**
@@ -1016,7 +1163,12 @@ export class SmartTodoView extends ItemView {
 
   // --- Row -----------------------------------------------------------------
 
-  private renderRow(parent: HTMLElement, task: SmartTask, today: Date): void {
+  private renderRow(
+    parent: HTMLElement,
+    task: SmartTask,
+    today: Date,
+    opts: { hideSource?: boolean } = {}
+  ): void {
     const row = parent.createDiv({ cls: "stw-row-task" });
     if (task.status === "done") row.addClass("is-done");
     if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
@@ -1050,7 +1202,9 @@ export class SmartTodoView extends ItemView {
 
     this.renderCategoryChip(meta, task);
 
-    this.renderSourceChip(meta, task);
+    // Under a tracked-note group the header already names the note, so the
+    // chip would repeat it on every row.
+    if (!opts.hideSource) this.renderSourceChip(meta, task);
 
     this.renderEffortPill(meta, task);
 

@@ -121,7 +121,9 @@ var DEFAULT_SETTINGS = {
   accent: "omnifocus",
   defaultMode: "focus",
   sweepSeconds: 180,
-  showSweepBanner: true
+  showSweepBanner: true,
+  sourceLabels: {},
+  collapsedSources: []
 };
 var CATEGORIES = ["betaworks", "personal", "health"];
 var CATEGORY_LABEL = {
@@ -1267,6 +1269,25 @@ function selectTasks(tasks, query, today = startOfToday()) {
     });
   }
   return query.horizon === "done" ? out.sort(compareCompleted) : out.sort((a, b) => compareForToday(a, b, today));
+}
+function groupBySource(tasks, isHome) {
+  const main = [];
+  const byPath = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    if (isHome(task.filePath)) {
+      main.push(task);
+      continue;
+    }
+    const bucket = byPath.get(task.filePath);
+    if (bucket)
+      bucket.push(task);
+    else
+      byPath.set(task.filePath, [task]);
+  }
+  return {
+    main,
+    groups: [...byPath.entries()].map(([path, groupTasks]) => ({ path, tasks: groupTasks }))
+  };
 }
 function groupByQuadrant(tasks, today = startOfToday()) {
   const out = { do: [], schedule: [], delegate: [], drop: [] };
@@ -2477,7 +2498,8 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
    * the important work is still what you read first.
    */
   renderFocus(tasks, today) {
-    const grouped = groupByQuadrant(tasks, today);
+    const split = groupBySource(tasks, (p) => this.isHomeFile(p));
+    const grouped = groupByQuadrant(split.main, today);
     const quickies = tasks.filter((t) => t.effort === "light");
     let bannerPlaced = false;
     for (const q of QUADRANT_ORDER) {
@@ -2501,6 +2523,120 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
         bannerPlaced = true;
       }
     }
+    for (const group of split.groups)
+      this.renderSourceGroup(group, today);
+    if (!bannerPlaced && this.plugin.settings.showSweepBanner && quickies.length >= 2) {
+      this.renderSweepBanner(quickies);
+    }
+  }
+  /** Tracker and inbox are "home"; anything else is a tracked project note. */
+  isHomeFile(path) {
+    return samePath(path, this.plugin.primaryFile) || samePath(path, this.plugin.inboxPath);
+  }
+  /** The heading for a tracked note's group — renamed label, else the filename. */
+  sourceLabel(path) {
+    var _a, _b, _c, _d;
+    const custom = (_b = (_a = this.plugin.settings.sourceLabels) == null ? void 0 : _a[path]) == null ? void 0 : _b.trim();
+    if (custom)
+      return custom;
+    return (_d = (_c = path.split("/").pop()) == null ? void 0 : _c.replace(/\.md$/i, "")) != null ? _d : path;
+  }
+  isSourceCollapsed(path) {
+    var _a;
+    return ((_a = this.plugin.settings.collapsedSources) != null ? _a : []).includes(path);
+  }
+  /**
+   * One tracked note, folded under its own heading.
+   *
+   * The count stays on the header when it's shut, which is the whole bargain:
+   * folding is "not now", not "gone". Click the header to fold; right-click to
+   * rename it, open the note, or stop tracking.
+   */
+  renderSourceGroup(group, today) {
+    const collapsed = this.isSourceCollapsed(group.path);
+    const label = this.sourceLabel(group.path);
+    const head = this.bodyEl.createDiv({
+      cls: `stw-source-head${collapsed ? " is-collapsed" : ""}`
+    });
+    const caret = head.createSpan({ cls: "stw-source-caret" });
+    (0, import_obsidian7.setIcon)(caret, collapsed ? "chevron-right" : "chevron-down");
+    (0, import_obsidian7.setIcon)(head.createSpan({ cls: "stw-source-head-icon" }), "file-text");
+    head.createSpan({ cls: "stw-source-title", text: label });
+    const minutes = estimateMinutes(group.tasks);
+    head.createSpan({
+      cls: "stw-source-tally",
+      text: minutes > 0 ? `${group.tasks.length} \xB7 ${formatDuration(minutes)}` : String(group.tasks.length)
+    });
+    head.setAttr(
+      "aria-label",
+      `${group.tasks.length} task${group.tasks.length === 1 ? "" : "s"} from ${group.path} \u2014 click to ${collapsed ? "expand" : "fold"}, right-click to rename`
+    );
+    head.addEventListener("click", () => void this.toggleSource(group.path));
+    head.addEventListener("contextmenu", (evt) => {
+      var _a;
+      evt.preventDefault();
+      evt.stopPropagation();
+      const menu = new import_obsidian7.Menu();
+      menu.addItem(
+        (item) => item.setTitle("Rename this group\u2026").setIcon("pencil").onClick(() => this.renameSource(group.path, head))
+      );
+      if ((_a = this.plugin.settings.sourceLabels) == null ? void 0 : _a[group.path]) {
+        menu.addItem(
+          (item) => item.setTitle("Use the note's name").setIcon("rotate-ccw").onClick(() => void this.setSourceLabel(group.path, ""))
+        );
+      }
+      menu.addItem(
+        (item) => item.setTitle("Open the note").setIcon("file-text").onClick(() => void this.revealTask(group.tasks[0]))
+      );
+      menu.addItem(
+        (item) => item.setTitle("Stop tracking this note").setIcon("x").onClick(() => void this.plugin.toggleTracked(group.path))
+      );
+      menu.showAtMouseEvent(evt);
+    });
+    if (collapsed)
+      return;
+    for (const task of group.tasks) {
+      this.renderRow(this.bodyEl, task, today, { hideSource: true });
+    }
+  }
+  async toggleSource(path) {
+    var _a;
+    const current = (_a = this.plugin.settings.collapsedSources) != null ? _a : [];
+    this.plugin.settings.collapsedSources = current.includes(path) ? current.filter((p) => p !== path) : [...current, path];
+    await this.plugin.saveSettings();
+    this.render();
+  }
+  async setSourceLabel(path, label) {
+    var _a;
+    const labels = { ...(_a = this.plugin.settings.sourceLabels) != null ? _a : {} };
+    if (label.trim())
+      labels[path] = label.trim();
+    else
+      delete labels[path];
+    this.plugin.settings.sourceLabels = labels;
+    await this.plugin.saveSettings();
+    this.render();
+  }
+  /** Rename in place: the header becomes an input, Enter commits, Esc cancels. */
+  renameSource(path, head) {
+    head.empty();
+    const input = head.createEl("input", {
+      cls: "stw-source-rename",
+      attr: { type: "text", value: this.sourceLabel(path), placeholder: "Group name" }
+    });
+    input.addEventListener("click", (evt) => evt.stopPropagation());
+    input.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        void this.setSourceLabel(path, input.value);
+      } else if (evt.key === "Escape") {
+        evt.preventDefault();
+        this.render();
+      }
+    });
+    input.addEventListener("blur", () => void this.setSourceLabel(path, input.value));
+    input.focus();
+    input.select();
   }
   /**
    * A tiny ring, drawn beside any time estimate.
@@ -2640,7 +2776,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       this.renderRow(body, task, today);
   }
   // --- Row -----------------------------------------------------------------
-  renderRow(parent, task, today) {
+  renderRow(parent, task, today, opts = {}) {
     const row = parent.createDiv({ cls: "stw-row-task" });
     if (task.status === "done")
       row.addClass("is-done");
@@ -2671,7 +2807,8 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
     const meta = main.createDiv({ cls: "stw-task-meta" });
     this.renderCategoryChip(meta, task);
-    this.renderSourceChip(meta, task);
+    if (!opts.hideSource)
+      this.renderSourceChip(meta, task);
     this.renderEffortPill(meta, task);
     if (task.due) {
       meta.createSpan({ cls: "stw-date", text: this.humanDate(task.due, today) });

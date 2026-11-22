@@ -252,6 +252,56 @@ export function selectTasks(
     : out.sort((a, b) => compareForToday(a, b, today));
 }
 
+export interface SourceGroup {
+  /** Vault path of the note these tasks were read from. */
+  path: string;
+  tasks: SmartTask[];
+}
+
+export interface SourceSplit {
+  /** Tasks from the task files themselves — the ordinary list. */
+  main: SmartTask[];
+  /** One group per tracked project note, in the order they first appear. */
+  groups: SourceGroup[];
+}
+
+/**
+ * Fold tasks read from tracked project notes under their note.
+ *
+ * Tracking the Turkey Fry page adds ten checkboxes to the panel, and mixed
+ * flat into the list they read as ten unrelated errands — "Propane", "Peanut
+ * oil", "Thaw the turkey" — crowding out the work that actually belongs to a
+ * day. They came in as a set and they belong to one piece of work, so they
+ * should sit under its name and fold away when it isn't Thursday.
+ *
+ * `isHome` decides what counts as an ordinary task file (the tracker, the
+ * inbox) versus a note that happens to be tracked. Group order follows the
+ * order tasks arrive in, so the sort that put the most pressing work first
+ * also decides which project is nearest the top.
+ */
+export function groupBySource(
+  tasks: SmartTask[],
+  isHome: (path: string) => boolean
+): SourceSplit {
+  const main: SmartTask[] = [];
+  const byPath = new Map<string, SmartTask[]>();
+
+  for (const task of tasks) {
+    if (isHome(task.filePath)) {
+      main.push(task);
+      continue;
+    }
+    const bucket = byPath.get(task.filePath);
+    if (bucket) bucket.push(task);
+    else byPath.set(task.filePath, [task]);
+  }
+
+  return {
+    main,
+    groups: [...byPath.entries()].map(([path, groupTasks]) => ({ path, tasks: groupTasks })),
+  };
+}
+
 /** Split a selection into the four Eisenhower sections, in reading order. */
 export function groupByQuadrant(
   tasks: SmartTask[],

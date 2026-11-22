@@ -309,6 +309,17 @@ export interface SmartTodoSettings {
    * of small stuff a *batch with a button* instead of noise between real work.
    */
   showSweepBanner: boolean;
+  /**
+   * Display name per tracked note, keyed by vault path.
+   *
+   * The filename is the default and it's usually wrong as a heading: "Turkey
+   * Fry Prep — Thanksgiving 2026 🦃" is a page title, not a label for the ten
+   * errands inside it. Rename the group to what the batch *is* ("Frying
+   * turkey items") without renaming the note.
+   */
+  sourceLabels: Record<string, string>;
+  /** Paths whose group is folded shut. Folding has to survive a reload. */
+  collapsedSources: string[];
 }
 
 export type Layout = "card" | "table";
@@ -326,6 +337,8 @@ export const DEFAULT_SETTINGS: SmartTodoSettings = {
   defaultMode: "focus",
   sweepSeconds: 180,
   showSweepBanner: true,
+  sourceLabels: {},
+  collapsedSources: [],
 };
 
 // --- Categories ----------------------------------------------------------

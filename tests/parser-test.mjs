@@ -838,6 +838,46 @@ console.log("\n[search is scoped to the filters — and has to say so]");
   check("so the empty state can tell the two apart", matchesSearch(gala, "propane").length === 0 && matchesSearch(gala, "gala").length > 0, true);
 }
 
+console.log("\n[tracked notes fold under their own heading]");
+{
+  // John, 2026-11-22: "when pulling in items off a page I think they need to be
+  // folded under the a title — ie: 'Frying Turkey items'".
+  const { groupBySource, selectTasks } = mod.filters;
+  const REAL = mod.writer.startOfToday();
+  const HOME = "3. Evergreen & fleeting Notes/Task tracker.md";
+  const NOTE = "botwick projects & model chats/Turkey Fry Prep.md";
+  const OTHER = "botwick projects & model chats/Camp apps.md";
+  const isHome = (p) => p === HOME;
+
+  const mixed = [
+    ...parseTasksFromContent("- [ ] Send the LP letter \u{1F4C5} 2026-11-01 [important:: true]\n- [ ] Book the car", HOME),
+    ...parseTasksFromContent("- [ ] Refill the propane tank\n- [ ] Thaw the turkey fully\n- [x] Buy peanut oil \u2705 2026-11-21", NOTE),
+    ...parseTasksFromContent("- [ ] Score the Camp applications [effort:: heavy]", OTHER),
+  ];
+
+  const split = groupBySource(mixed, isHome);
+  check("the day's own list keeps only task-file tasks", split.main.length, 2);
+  check("one group per tracked note", split.groups.length, 2);
+  check("first group is the turkey note", split.groups[0].path, NOTE);
+  check("with all three of its lines", split.groups[0].tasks.length, 3);
+  check("second group is the other note", split.groups[1].path, OTHER);
+  check("no task is lost in the split", split.main.length + split.groups.reduce((n, g) => n + g.tasks.length, 0), mixed.length);
+  check("and none is counted twice", new Set([...split.main, ...split.groups.flatMap((g) => g.tasks)]).size, mixed.length);
+
+  // Folding is a display concern only: it must sit *after* selection, so the
+  // filters still decide what exists before the grouping decides where it sits.
+  const todayOnly = selectTasks(mixed, { horizon: "today", budget: "any", category: "all", search: "" }, REAL);
+  const todaySplit = groupBySource(todayOnly, isHome);
+  check("Today still hides the undated note tasks", todaySplit.groups.length, 0);
+  check("leaving just the dated tracker task", todaySplit.main.length, 1);
+
+  // Group order follows the sorted list, so the most pressing note floats up.
+  const noteFirst = groupBySource([mixed[5], mixed[2]], isHome);
+  check("group order follows task order", noteFirst.groups[0].path, OTHER);
+
+  check("nothing tracked means no groups at all", groupBySource(parseTasksFromContent("- [ ] Book the car", HOME), isHome).groups.length, 0);
+}
+
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`
 );

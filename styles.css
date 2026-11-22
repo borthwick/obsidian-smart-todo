@@ -408,6 +408,66 @@
   opacity: 0.65;
 }
 
+/* --- Tracked-note group ---------------------------------------------- */
+/* Tasks pulled in from a project note sit under the note's name, below the
+   day's own list. Deliberately quieter than a quadrant header — it's a
+   container, not a verdict — but it carries a caret and a count so a folded
+   group still says how much is inside. */
+
+.stw-source-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  margin: var(--size-4-3) 0 var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-2);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  cursor: pointer;
+  user-select: none;
+}
+.stw-source-head:hover {
+  background: var(--background-modifier-active-hover);
+}
+.stw-source-caret,
+.stw-source-head-icon {
+  display: flex;
+  color: var(--text-faint);
+}
+.stw-source-caret .svg-icon,
+.stw-source-head-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+.stw-source-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stw-source-tally {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+/* Folded: the header is all that's left, so it takes the accent to say there's
+   something behind it rather than reading as an empty divider. */
+.stw-source-head.is-collapsed .stw-source-caret,
+.stw-source-head.is-collapsed .stw-source-title {
+  color: var(--stw-accent);
+}
+.stw-source-rename {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 2px var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
 /* --- Task row -------------------------------------------------------- */
 
 .stw-row-task {
