@@ -67,6 +67,7 @@ import {
   applyTaskPatch,
   dropTask,
   moveTaskLine,
+  pushTargetDate,
   pushTask,
   safeWrite,
   setTaskEffort,
@@ -968,16 +969,54 @@ export class SmartTodoView extends ItemView {
     if (task.status === "open") {
       const pushBtn = actions.createEl("button", {
         cls: "stw-icon-btn is-ghost",
-        attr: { "aria-label": "Push 1 day" },
+        attr: {
+          "aria-label": "Push to tomorrow — right-click for longer",
+          title: "Push to tomorrow (rests until then). Right-click for longer.",
+        },
       });
       setIcon(pushBtn, "chevrons-right");
       pushBtn.addEventListener("click", async (evt) => {
         evt.stopPropagation();
         pushBtn.disabled = true;
-        await safeWrite(() => pushTask(this.app, task, 1));
-        await this.refresh();
+        await this.push(task, 1);
+      });
+      pushBtn.addEventListener("contextmenu", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const menu = new Menu();
+        for (const [days, label] of [
+          [1, "Tomorrow"],
+          [2, "In 2 days"],
+          [7, "Next week"],
+        ] as [number, string][]) {
+          menu.addItem((item) =>
+            item.setTitle(label).onClick(() => void this.push(task, days))
+          );
+        }
+        menu.showAtMouseEvent(evt as MouseEvent);
       });
     }
+  }
+
+  /**
+   * Push and say what happened.
+   *
+   * The notice exists because the effect is deliberately invisible in the place
+   * you clicked: a pushed task leaves Do First and drops out of Today, which
+   * from the row's point of view looks identical to nothing happening. One line
+   * naming the new date — and the section it moved to — is the difference.
+   */
+  private async push(task: SmartTask, days: number): Promise<void> {
+    const ok = await safeWrite(() => pushTask(this.app, task, days));
+    if (ok) {
+      const when = pushTargetDate(task, days);
+      new Notice(
+        `Pushed to ${this.humanDate(when, startOfToday())} — resting until then, ` +
+          `so it's out of Do First.`,
+        4000
+      );
+    }
+    await this.refresh();
   }
 
   /**

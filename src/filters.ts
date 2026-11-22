@@ -175,12 +175,15 @@ export function matchesHorizon(
   switch (horizon) {
     case "today":
       return !isResting(task, today) && !!task.due && task.due.getTime() <= today.getTime();
-    case "week":
-      return (
-        !isResting(task, today) &&
-        !!task.due &&
-        task.due.getTime() <= addDays(today, 6).getTime()
-      );
+    case "week": {
+      const end = addDays(today, 6);
+      // A task resting until Wednesday is still this week's work, so only a
+      // rest that runs *past* the window hides it. Without this, pushing a
+      // task by a day would drop it out of the week entirely — and "push to
+      // tomorrow" must never mean "disappear".
+      if (task.defer && task.defer.getTime() > end.getTime()) return false;
+      return !!task.due && task.due.getTime() <= end.getTime();
+    }
     default:
       return true;
   }

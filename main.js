@@ -692,15 +692,20 @@ function buildToggledLine(task, nowDone) {
 async function toggleTaskDone(app, task, nowDone) {
   await replaceTaskLine(app, task, buildToggledLine(task, nowDone));
 }
+function pushTargetDate(task, days = 1, today = startOfToday()) {
+  var _a;
+  const anchor = (_a = task.due) != null ? _a : task.defer;
+  const from = anchor && anchor.getTime() > today.getTime() ? anchor : today;
+  return addDays(from, days);
+}
 function buildPushedLine(task, days = 1) {
+  const today = startOfToday();
+  const target = pushTargetDate(task, days, today);
   let line = task.rawText;
-  if (task.due) {
-    line = setEmojiDate(line, "\u{1F4C5}", DUE_RE, addDays(task.due, days));
-  } else if (task.defer) {
-    line = setEmojiDate(line, "\u23F3", DEFER_RE, addDays(task.defer, days));
-  } else {
-    line = setEmojiDate(line, "\u{1F4C5}", DUE_RE, addDays(startOfToday(), days));
+  if (task.due || !task.defer) {
+    line = setEmojiDate(line, "\u{1F4C5}", DUE_RE, target);
   }
+  line = setEmojiDate(line, "\u23F3", DEFER_RE, target);
   line = setInlineField(line, "pushes", String(task.pushes + 1));
   return line;
 }
@@ -1222,8 +1227,12 @@ function matchesHorizon(task, horizon, today = startOfToday()) {
   switch (horizon) {
     case "today":
       return !isResting(task, today) && !!task.due && task.due.getTime() <= today.getTime();
-    case "week":
-      return !isResting(task, today) && !!task.due && task.due.getTime() <= addDays(today, 6).getTime();
+    case "week": {
+      const end = addDays(today, 6);
+      if (task.defer && task.defer.getTime() > end.getTime())
+        return false;
+      return !!task.due && task.due.getTime() <= end.getTime();
+    }
     default:
       return true;
   }
@@ -2573,16 +2582,52 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     if (task.status === "open") {
       const pushBtn = actions.createEl("button", {
         cls: "stw-icon-btn is-ghost",
-        attr: { "aria-label": "Push 1 day" }
+        attr: {
+          "aria-label": "Push to tomorrow \u2014 right-click for longer",
+          title: "Push to tomorrow (rests until then). Right-click for longer."
+        }
       });
       (0, import_obsidian7.setIcon)(pushBtn, "chevrons-right");
       pushBtn.addEventListener("click", async (evt) => {
         evt.stopPropagation();
         pushBtn.disabled = true;
-        await safeWrite(() => pushTask(this.app, task, 1));
-        await this.refresh();
+        await this.push(task, 1);
+      });
+      pushBtn.addEventListener("contextmenu", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const menu = new import_obsidian7.Menu();
+        for (const [days, label] of [
+          [1, "Tomorrow"],
+          [2, "In 2 days"],
+          [7, "Next week"]
+        ]) {
+          menu.addItem(
+            (item) => item.setTitle(label).onClick(() => void this.push(task, days))
+          );
+        }
+        menu.showAtMouseEvent(evt);
       });
     }
+  }
+  /**
+   * Push and say what happened.
+   *
+   * The notice exists because the effect is deliberately invisible in the place
+   * you clicked: a pushed task leaves Do First and drops out of Today, which
+   * from the row's point of view looks identical to nothing happening. One line
+   * naming the new date — and the section it moved to — is the difference.
+   */
+  async push(task, days) {
+    const ok = await safeWrite(() => pushTask(this.app, task, days));
+    if (ok) {
+      const when = pushTargetDate(task, days);
+      new import_obsidian7.Notice(
+        `Pushed to ${this.humanDate(when, startOfToday())} \u2014 resting until then, so it's out of Do First.`,
+        4e3
+      );
+    }
+    await this.refresh();
   }
   /**
    * The size control. Effort reads as a duration, not a weight class — "3 min"

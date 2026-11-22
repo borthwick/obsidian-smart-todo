@@ -191,17 +191,65 @@ check("longest-overdue first", today.tasks[0].title, "Send Marta async screens")
 check("due-today sorts last in Today", today.tasks[today.tasks.length - 1].due.getDate(), 14);
 
 console.log("\n[write-back line builders]");
+// Push is anchored to the real today, not the pinned TODAY — it writes dates
+// relative to the clock, so the expectations are computed the same way.
+const { startOfToday, addDays } = mod.writer;
+const { isResting, isOverdue } = mod.filters;
+const REAL_TODAY = startOfToday();
+const inDays = (n) => formatDate(addDays(REAL_TODAY, n));
+
 const pushed = buildPushedLine(marta, 1);
 console.log(`  pushed: ${pushed.trim()}`);
-check("due advanced by 1 day", /📅 2026-11-05/.test(pushed), true);
+// marta is overdue (📅 2026-11-04). The old behaviour added a day to that
+// stale date, which left the task overdue, urgent, and still in Do First —
+// a push that visibly did nothing. It has to land tomorrow instead.
+check("overdue task pushes to tomorrow, not stale-date + 1", pushed.includes(`📅 ${inDays(1)}`), true);
 check("pushes incremented 1→2", /\[pushes:: 2\]/.test(pushed), true);
-check("defer untouched", /⏳ 2026-11-01/.test(pushed), true);
+check("defer follows the due date", pushed.includes(`⏳ ${inDays(1)}`), true);
+check("stale defer is replaced, not kept", /⏳ 2026-11-01/.test(pushed), false);
+
+// The point of the defer: a pushed task leaves the urgent axis, so it drops
+// out of Do First and into Schedule, and returns on its own.
+const pushedTask = parseTasksFromContent(pushed, "Tasks.md")[0];
+check("pushed task is resting", isResting(pushedTask, REAL_TODAY), true);
+check("pushed task is no longer urgent", mod.filters.isUrgent(pushedTask, REAL_TODAY), false);
+check("pushed task is no longer overdue", isOverdue(pushedTask, REAL_TODAY), false);
+// John's actual case: "Botwick co-investor survey — send out", flagged
+// important and 26 days overdue, pushed twice and still sitting in DO FIRST.
+const survey = parseTasksFromContent(
+  `- [ ] Botwick co-investor survey — send out 📅 2026-10-27 [effort:: moderate] [project:: Betaworks] [important:: true] [pushes:: 2]`,
+  "Tasks.md"
+)[0];
+check("before the push it's Do First", mod.filters.quadrantOf(survey, REAL_TODAY), "do");
+const surveyPushed = parseTasksFromContent(buildPushedLine(survey, 1), "Tasks.md")[0];
+check("after the push it's Schedule, not Do First", mod.filters.quadrantOf(surveyPushed, REAL_TODAY), "schedule");
+check("and the push counter still advances", surveyPushed.pushes, 3);
+// ...but it must not vanish from the week. "Push to tomorrow" is not "delete".
+check("still in This week", mod.filters.matchesHorizon(pushedTask, "week", REAL_TODAY), true);
+check("out of Today, which is the whole point", mod.filters.matchesHorizon(pushedTask, "today", REAL_TODAY), false);
+
+const pushedTwo = buildPushedLine(marta, 2);
+check("push by 2 days lands 2 days out", pushedTwo.includes(`📅 ${inDays(2)}`), true);
+check("a 2-day push isn't urgent either", mod.filters.isUrgent(parseTasksFromContent(pushedTwo, "Tasks.md")[0], REAL_TODAY), false);
+
+// A future due date is a real plan, so push moves it relative to itself.
+const future = parseTasksFromContent(
+  `- [ ] Future thing 📅 ${inDays(10)} [important:: true]`,
+  "Tasks.md"
+)[0];
+check("future due date pushes from itself", buildPushedLine(future, 1).includes(`📅 ${inDays(11)}`), true);
 
 const noPushes = tasks.find((t) => t.title.startsWith("Review the Q4"));
 const pushedNew = buildPushedLine(noPushes, 1);
 console.log(`  pushed (no due, no defer, no pushes field): ${pushedNew.trim()}`);
 check("pushes field appended as 1", /\[pushes:: 1\]/.test(pushedNew), true);
-check("undated task gets a due date", /📅 \d{4}-\d{2}-\d{2}/.test(pushedNew), true);
+check("undated task gets a due date", pushedNew.includes(`📅 ${inDays(1)}`), true);
+
+// A deferred-but-undated task has no deadline, and a push shouldn't invent one.
+const deferOnly = parseTasksFromContent("- [ ] Someday thing ⏳ 2026-01-01", "Tasks.md")[0];
+const pushedDeferOnly = buildPushedLine(deferOnly, 1);
+check("defer-only task still has no due date", /📅/.test(pushedDeferOnly), false);
+check("defer-only task's rest restarts from today", pushedDeferOnly.includes(`⏳ ${inDays(1)}`), true);
 
 const doneLine = buildToggledLine(marta, true);
 console.log(`  completed: ${doneLine.trim()}`);

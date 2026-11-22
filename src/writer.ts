@@ -157,20 +157,38 @@ export async function toggleTaskDone(
 /**
  * Push a task out by `days`.
  *
- * Target field is due, falling back to defer when there's no due date. A task
- * with neither gets a due date of today + days — pushing an undated backlog
- * item is an implicit "I'm deciding when this lands".
+ * Two rules, both learned from a push that visibly did nothing:
+ *
+ * - **Push from today, never from a stale date.** Adding a day to a due date
+ *   that's 26 days in the past leaves the task 25 days late: still overdue,
+ *   still urgent, still sitting at the top of Do First with nothing but the ↻
+ *   counter to show for the click. The only reading of "push by a day" that
+ *   means anything on an overdue task is "land it tomorrow".
+ * - **A push rests the task until the new date.** Urgency is derived from the
+ *   due date and can't be stored, so the defer field is the one honest lever
+ *   for "not today": a resting task is never urgent, which moves it out of Do
+ *   First into Schedule, and it comes back on its own when the date arrives.
+ *
+ * Target field is due, falling back to defer when there's no due date — pushing
+ * a deferred-but-undated task shouldn't invent a deadline for it. A task with
+ * neither gets both, which is the implicit "I'm deciding when this lands".
  */
+export function pushTargetDate(task: SmartTask, days = 1, today = startOfToday()): Date {
+  const anchor = task.due ?? task.defer;
+  // Never push backwards in time: a date already in the past restarts today.
+  const from = anchor && anchor.getTime() > today.getTime() ? anchor : today;
+  return addDays(from, days);
+}
+
 export function buildPushedLine(task: SmartTask, days = 1): string {
+  const today = startOfToday();
+  const target = pushTargetDate(task, days, today);
   let line = task.rawText;
 
-  if (task.due) {
-    line = setEmojiDate(line, "📅", DUE_RE, addDays(task.due, days));
-  } else if (task.defer) {
-    line = setEmojiDate(line, "⏳", DEFER_RE, addDays(task.defer, days));
-  } else {
-    line = setEmojiDate(line, "📅", DUE_RE, addDays(startOfToday(), days));
+  if (task.due || !task.defer) {
+    line = setEmojiDate(line, "📅", DUE_RE, target);
   }
+  line = setEmojiDate(line, "⏳", DEFER_RE, target);
 
   line = setInlineField(line, "pushes", String(task.pushes + 1));
   return line;
