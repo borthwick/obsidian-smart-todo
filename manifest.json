@@ -1,9 +1,9 @@
 {
   "id": "smart-todo",
   "name": "Smart ToDo",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "minAppVersion": "1.7.2",
-  "description": "Effort-aware task triage with Eisenhower-matrix classification. Reads Tasks-plugin markdown checkboxes from an opt-in set of managed files and surfaces urgent/important quadrants, click-to-edit task metadata, three categories (Betaworks / Personal / Health), and a Quickies group for 3-minute jobs.",
+  "description": "Effort-aware task triage with Eisenhower-matrix classification. One sidebar, three modes (Focus / Sweep / Lanes) with a time-budget filter (3 min / 15 min / 1 hour / any), work-vs-personal categories, a command palette, and a timed sweep for 3-minute jobs.",
   "author": "BotWick",
   "isDesktopOnly": false
 }

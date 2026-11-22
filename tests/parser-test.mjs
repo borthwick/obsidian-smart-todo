@@ -16,7 +16,10 @@ import { dirname, resolve } from "path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
-const FIXTURE = process.argv[2] || "/tmp/smart-todo-test/sample-tasks.md";
+// The fixture lives in the repo, not /tmp — an earlier version pointed at a
+// scratch path that a reboot quietly deleted, which turns "tests pass" into
+// "tests can't run" without anyone noticing.
+const FIXTURE = process.argv[2] || join(here, "fixtures", "sample-tasks.md");
 
 const outdir = mkdtempSync(join(tmpdir(), "smart-todo-test-"));
 const outfile = join(outdir, "bundle.cjs");

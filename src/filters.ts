@@ -5,11 +5,18 @@
 
 import { addDays, isSameDay, startOfToday } from "./parser";
 import {
+  BUDGETS,
+  Budget,
+  Category,
+  CategoryFilter,
+  EFFORT_MINUTES,
   EFFORT_WEIGHT,
+  Horizon,
   Quadrant,
   QuadFilterId,
   SmartTask,
   TabId,
+  categoryFor,
   quadrantFor,
 } from "./types";
 
@@ -100,6 +107,125 @@ export function matchesQuadFilter(
     default:
       return true;
   }
+}
+
+// --- Budget, category, horizon -------------------------------------------
+//
+// The three controls the 0.8 panel actually exposes. Each is a pure predicate
+// over one task so the view can compose them freely and the counts in the
+// filter chips are computed the same way the list is.
+
+/**
+ * Does this task fit inside `budget`?
+ *
+ * An *untagged* task fits only "Any". That's the deliberate harsh case: if you
+ * haven't said how long something takes, it cannot honestly be offered as
+ * something you can finish in the next three minutes. It also turns the budget
+ * chips into a quiet nudge to tag effort, which nothing else in the UI does.
+ */
+export function fitsBudget(task: SmartTask, budget: Budget): boolean {
+  if (budget === "any") return true;
+  if (!task.effort) return false;
+  const def = BUDGETS.find((b) => b.id === budget);
+  return !!def && def.fits.includes(task.effort);
+}
+
+/** Does this task's category pass the category chip row? */
+export function matchesCategory(task: SmartTask, filter: CategoryFilter): boolean {
+  if (filter === "all") return true;
+  // Fold legacy free-text projects on the fly so an un-migrated vault still
+  // filters sensibly instead of showing an empty Betaworks tab.
+  return categoryFor(task.project) === (filter as Category);
+}
+
+/**
+ * Minutes this set will plausibly take. Untagged tasks contribute nothing —
+ * counting them as zero understates, but inventing a number for work you
+ * haven't sized would overstate with false precision, and the total is always
+ * printed as "about".
+ */
+export function estimateMinutes(tasks: SmartTask[]): number {
+  return tasks.reduce((sum, t) => sum + (t.effort ? EFFORT_MINUTES[t.effort] : 0), 0);
+}
+
+/** "27m", "1h 19m", "2h" — the compact form the group headers use. */
+export function formatDuration(minutes: number): string {
+  if (minutes <= 0) return "—";
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+}
+
+/**
+ * The "when" axis, collapsed from seven tabs to four.
+ *
+ * `today` keeps the old Today semantics (due today or earlier, not resting).
+ * `all` is every open task including undated ones — the thing the old tab set
+ * could only reach by visiting Backlog *and* Today and adding them up.
+ */
+export function matchesHorizon(
+  task: SmartTask,
+  horizon: Horizon,
+  today = startOfToday()
+): boolean {
+  if (horizon === "done") return task.status === "done";
+  if (task.status !== "open") return false;
+  switch (horizon) {
+    case "today":
+      return !isResting(task, today) && !!task.due && task.due.getTime() <= today.getTime();
+    case "week":
+      return (
+        !isResting(task, today) &&
+        !!task.due &&
+        task.due.getTime() <= addDays(today, 6).getTime()
+      );
+    default:
+      return true;
+  }
+}
+
+export interface PanelQuery {
+  horizon: Horizon;
+  budget: Budget;
+  category: CategoryFilter;
+  /** Free text from the search box; empty string means no text filter. */
+  search: string;
+}
+
+/**
+ * The one selection function the 0.8 panel uses. Horizon → category → budget →
+ * text, then the existing triage sort. Everything the view draws — the list,
+ * the lanes, the sweep queue, every chip count — comes from this, so a count
+ * can never disagree with what clicking that chip actually shows.
+ */
+export function selectTasks(
+  tasks: SmartTask[],
+  query: PanelQuery,
+  today = startOfToday()
+): SmartTask[] {
+  const needle = query.search.trim().toLowerCase();
+  const out = tasks.filter((t) => {
+    if (!matchesHorizon(t, query.horizon, today)) return false;
+    if (!matchesCategory(t, query.category)) return false;
+    if (!fitsBudget(t, query.budget)) return false;
+    if (needle && !t.title.toLowerCase().includes(needle)) return false;
+    return true;
+  });
+  return query.horizon === "done"
+    ? out.sort(compareCompleted)
+    : out.sort((a, b) => compareForToday(a, b, today));
+}
+
+/** Split a selection into the four Eisenhower sections, in reading order. */
+export function groupByQuadrant(
+  tasks: SmartTask[],
+  today = startOfToday()
+): Record<Quadrant, SmartTask[]> {
+  const out: Record<Quadrant, SmartTask[]> = { do: [], schedule: [], delegate: [], drop: [] };
+  for (const t of tasks) out[quadrantOf(t, today)].push(t);
+  return out;
 }
 
 /**

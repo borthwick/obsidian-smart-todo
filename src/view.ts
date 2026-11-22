@@ -1,37 +1,64 @@
-// Smart ToDo — Today view (right-leaf ItemView).
+// Smart ToDo — the sidebar panel (right-leaf ItemView).
+//
+// 0.8 rebuild. The shape comes from a round of mockups, and the thing they
+// settled was not "which layout" but *what kind of control each axis is*:
+//
+//   category (work / personal / health) — a FILTER
+//   time budget (3 min / 15 min / 1 hour) — a FILTER
+//   Eisenhower quadrant — the GROUPING
+//
+// 0.7 treated all three as views, which is why it ended up with seven tabs, an
+// eight-button quadrant bar, a matrix toggle and a layout toggle, and why no
+// combination of them answered "what should I do right now". Two filter rows
+// over one grouped list answers it, and everything else is a mode:
+//
+//   Focus — the list, grouped Do first / Schedule / Delegate / Drop
+//   Sweep — only what fits the budget, run on a timer (see sweep-modal.ts)
+//   Lanes — the same set split into effort columns
+//
+// Rows are shared across all three, so a task looks and behaves identically
+// wherever you meet it.
 
-import { ItemView, Menu, Modal, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, Menu, WorkspaceLeaf, setIcon } from "obsidian";
 import {
-  bucketFor,
+  PanelQuery,
+  estimateMinutes,
+  fitsBudget,
+  formatDuration,
+  groupByQuadrant,
   isResting,
   isUnjudged,
-  isUrgent,
+  matchesCategory,
+  matchesHorizon,
   quadrantOf,
+  selectTasks,
 } from "./filters";
 import { addDays, formatDate, isSameDay, startOfToday } from "./parser";
 import { describeScope } from "./scope";
 import {
+  ACCENTS,
+  BUDGETS,
+  Budget,
   CATEGORIES,
   CATEGORY_COLOR,
   CATEGORY_LABEL,
   Category,
+  CategoryFilter,
   EFFORTS,
+  EFFORT_BLURB,
   EFFORT_LABEL,
-  EFFORT_WEIGHT,
+  EFFORT_MINUTES,
   Effort,
-  Layout,
+  HORIZONS,
+  Horizon,
+  MODES,
   QUADRANTS,
-  QUAD_FILTERS,
   QUADRANT_COLOR,
-  QUICKIE_HEADING,
-  QuadFilterId,
+  QUADRANT_ORDER,
   Quadrant,
   SmartTask,
-  SortKey,
-  SortState,
-  TABS,
-  TabId,
   VIEW_TYPE_SMART_TODO,
+  ViewMode,
   asCategory,
   projectColor,
 } from "./types";
@@ -46,23 +73,25 @@ import {
   toggleTaskDone,
 } from "./writer";
 import { EditTaskModal } from "./edit-task-modal";
+import { SweepModal } from "./sweep-modal";
+import { QuickAction, QuickSwitchModal } from "./quick-switch";
 import type SmartTodoPlugin from "./main";
 
 export class SmartTodoView extends ItemView {
   plugin: SmartTodoPlugin;
-  activeTab: TabId = "today";
-  activeQuad: QuadFilterId = "all";
-  matrixView = false;
+
+  mode: ViewMode = "focus";
+  horizon: Horizon = "today";
+  budget: Budget = "any";
+  category: CategoryFilter = "all";
+  search = "";
+
   tasks: SmartTask[] = [];
   loading = false;
-  layout: Layout = "card";
-  sort: SortState | null = null;
 
-  private tabBarEl: HTMLElement;
-  private quadBarEl: HTMLElement;
-  private summaryEl: HTMLElement;
-  private listEl: HTMLElement;
-  private addInputEl: HTMLInputElement;
+  private filtersEl!: HTMLElement;
+  private bodyEl!: HTMLElement;
+  private searchInputEl!: HTMLInputElement;
 
   constructor(leaf: WorkspaceLeaf, plugin: SmartTodoPlugin) {
     super(leaf);
@@ -82,63 +111,19 @@ export class SmartTodoView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    this.layout = this.plugin.settings.defaultLayout;
+    this.mode = this.plugin.settings.defaultMode;
 
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
     root.addClass("smart-todo-root");
+    this.applyAccent(root);
 
-    const header = root.createDiv({ cls: "smart-todo-header" });
-    this.tabBarEl = header.createDiv({ cls: "smart-todo-tabs" });
+    this.renderTitleBar(root);
+    this.renderSearch(root);
+    this.filtersEl = root.createDiv({ cls: "stw-filters" });
+    this.bodyEl = root.createDiv({ cls: "stw-body" });
 
-    const actions = header.createDiv({ cls: "smart-todo-header-actions" });
-
-    // Matrix toggle: flip the list for a 2×2 Eisenhower grid of the same set.
-    const matrixBtn = actions.createEl("button", {
-      cls: "smart-todo-matrix-toggle",
-      attr: { "aria-label": "Toggle Eisenhower matrix" },
-    });
-    const paintMatrixBtn = (): void => {
-      setIcon(matrixBtn, "layout-grid");
-      matrixBtn.toggleClass("is-active", this.matrixView);
-    };
-    paintMatrixBtn();
-    matrixBtn.addEventListener("click", () => {
-      this.matrixView = !this.matrixView;
-      paintMatrixBtn();
-      this.render();
-    });
-
-    const layoutBtn = actions.createEl("button", {
-      cls: "smart-todo-layout-toggle",
-      attr: { "aria-label": "Toggle card / table layout" },
-    });
-    const paintLayoutBtn = (): void =>
-      setIcon(layoutBtn, this.layout === "table" ? "list" : "table");
-    paintLayoutBtn();
-    layoutBtn.addEventListener("click", () => {
-      this.layout = this.layout === "table" ? "card" : "table";
-      paintLayoutBtn();
-      this.render();
-    });
-
-    const refreshBtn = actions.createEl("button", {
-      cls: "smart-todo-refresh",
-      attr: { "aria-label": "Rescan vault" },
-    });
-    setIcon(refreshBtn, "refresh-cw");
-    refreshBtn.addEventListener("click", () => void this.refresh());
-
-    // Eisenhower filter buttons — the second filter axis, below the tabs.
-    this.quadBarEl = root.createDiv({ cls: "smart-todo-quadbar" });
-
-    this.renderAddRow(root);
-
-    this.summaryEl = root.createDiv({ cls: "smart-todo-summary" });
-    this.listEl = root.createDiv({ cls: "smart-todo-list" });
-
-    this.renderTabs();
-    this.renderQuadFilters();
+    this.renderFilters();
     await this.refresh();
   }
 
@@ -146,338 +131,524 @@ export class SmartTodoView extends ItemView {
     this.containerEl.children[1]?.empty();
   }
 
-  /** Rescan the vault, then repaint. */
+  /** Accent lives in CSS custom properties so one setting repaints everything. */
+  private applyAccent(root: HTMLElement): void {
+    const accent = ACCENTS[this.plugin.settings.accent] ?? ACCENTS.blue;
+    root.style.setProperty("--stw-accent", accent.base);
+    root.style.setProperty("--stw-accent-strong", accent.strong);
+  }
+
+  /** Repaint from scratch — used when a setting changes shape, not just data. */
+  rebuild(): void {
+    void this.onOpen();
+  }
+
   async refresh(): Promise<void> {
     this.loading = true;
     this.render();
     this.tasks = await this.plugin.scan();
     this.loading = false;
-    this.renderQuadFilters();
+    this.renderFilters();
     this.render();
   }
 
+  // --- Header --------------------------------------------------------------
+
+  private renderTitleBar(root: HTMLElement): void {
+    const bar = root.createDiv({ cls: "stw-titlebar" });
+
+    const brand = bar.createDiv({ cls: "stw-brand" });
+    const mark = brand.createSpan({ cls: "stw-mark" });
+    setIcon(mark, "check");
+    brand.createSpan({ cls: "stw-brand-name", text: "Smart ToDo" });
+
+    bar.createSpan({
+      cls: "stw-date",
+      text: new Date().toLocaleDateString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      }),
+    });
+
+    const refresh = bar.createEl("button", {
+      cls: "stw-icon-btn",
+      attr: { "aria-label": "Rescan vault" },
+    });
+    setIcon(refresh, "refresh-cw");
+    refresh.addEventListener("click", () => void this.refresh());
+
+    const add = bar.createEl("button", {
+      cls: "stw-icon-btn is-primary",
+      attr: { "aria-label": "Add task" },
+    });
+    setIcon(add, "plus");
+    add.addEventListener("click", () => this.focusCapture());
+  }
+
   /**
-   * Capture row. Title only — Enter appends `- [ ] <text>` to the managed file
-   * and the vault-modify event folds it back into the list. Dates and effort
-   * get set afterwards from the row UI, so capture never blocks on metadata.
+   * Search box. Typing filters the list live; ⌘K (or clicking the hint) opens
+   * the palette, which can set any filter *or* jump to a task. Both write the
+   * same state, so the chips below always reflect what the box did.
    */
-  private renderAddRow(root: HTMLElement): void {
-    const wrap = root.createDiv({ cls: "smart-todo-add" });
-    this.addInputEl = wrap.createEl("input", {
-      cls: "smart-todo-add-input",
-      attr: { type: "text", placeholder: "Add a task…" },
+  private renderSearch(root: HTMLElement): void {
+    const wrap = root.createDiv({ cls: "stw-search" });
+    const icon = wrap.createSpan({ cls: "stw-search-icon" });
+    setIcon(icon, "search");
+
+    this.searchInputEl = wrap.createEl("input", {
+      cls: "stw-search-input",
+      attr: { type: "text", placeholder: "work, quick, do first…" },
     }) as HTMLInputElement;
 
-    const commit = async (): Promise<void> => {
-      const value = this.addInputEl.value.trim();
-      if (!value) return;
-      this.addInputEl.disabled = true;
-      const ok = await this.plugin.addTask(value);
-      this.addInputEl.disabled = false;
-      if (ok) this.addInputEl.value = "";
-      this.addInputEl.focus();
-      await this.refresh();
-    };
-
-    this.addInputEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Enter") {
+    this.searchInputEl.addEventListener("input", () => {
+      this.search = this.searchInputEl.value;
+      this.renderFilters();
+      this.render();
+    });
+    this.searchInputEl.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape") {
+        this.searchInputEl.value = "";
+        this.search = "";
+        this.searchInputEl.blur();
+        this.renderFilters();
+        this.render();
+      } else if (evt.key === "Enter") {
+        // Enter on a non-empty box with no matches is the capture path: the
+        // fastest way to add a task is to look for it, not find it, and type.
         evt.preventDefault();
-        void commit();
-      } else if (evt.key === "Escape") {
-        this.addInputEl.value = "";
-        this.addInputEl.blur();
+        void this.captureFromSearch();
+      } else if (evt.key === "k" && (evt.metaKey || evt.ctrlKey)) {
+        evt.preventDefault();
+        this.openPalette();
       }
     });
 
-    const addBtn = wrap.createEl("button", {
-      cls: "smart-todo-add-btn",
-      attr: { "aria-label": "Add task" },
-    });
-    setIcon(addBtn, "plus");
-    addBtn.addEventListener("click", () => void commit());
+    const kbd = wrap.createSpan({ cls: "stw-kbd", text: "⌘K" });
+    kbd.addEventListener("click", () => this.openPalette());
   }
 
-  private renderTabs(): void {
-    this.tabBarEl.empty();
-    for (const tab of TABS) {
-      const btn = this.tabBarEl.createEl("button", {
-        cls: "smart-todo-tab",
-        text: tab.label,
-      });
-      if (tab.id === this.activeTab) btn.addClass("is-active");
-      btn.addEventListener("click", () => {
-        this.activeTab = tab.id;
-        this.renderTabs();
-        // Rescan, don't just repaint from memory. Switching tabs is the moment
-        // you most expect to see a task you just added — repainting a stale
-        // `this.tasks` is what made a new "tomorrow" task missing from the
-        // Tomorrow tab until something else triggered a refresh.
-        void this.refresh();
-      });
+  private focusCapture(): void {
+    this.searchInputEl.focus();
+    this.searchInputEl.select();
+  }
+
+  /** Enter in the search box with text that matches nothing → create it. */
+  private async captureFromSearch(): Promise<void> {
+    const value = this.searchInputEl.value.trim();
+    if (!value) return;
+    if (this.visibleTasks().length > 0) return; // it's a filter, not a capture
+    const ok = await this.plugin.addTask(value);
+    if (ok) {
+      this.searchInputEl.value = "";
+      this.search = "";
     }
+    await this.refresh();
   }
 
   /**
-   * The Eisenhower filter row. Each button carries a live count of how many
-   * open tasks in the current tab land in that slice — so the bar doubles as a
-   * matrix review: you can see at a glance that "Urgent & Important" is 9 and
-   * "Needs review" is 40 without clicking anything.
+   * Public so a command can open the palette without the panel being focused.
+   * The command is the honest entry point — ⌘K only works while the panel has
+   * focus, and a palette you can only reach from inside the thing it navigates
+   * isn't much of a shortcut.
    */
-  private renderQuadFilters(): void {
-    if (!this.quadBarEl) return;
-    this.quadBarEl.empty();
-    const today = startOfToday();
+  openPalette(): void {
+    new QuickSwitchModal(this.app, this.tasks, (action) => this.applyAction(action)).open();
+  }
 
-    // Count against the current tab's open set, ignoring the active quad filter
-    // (so the counts don't collapse to the one button you've selected).
-    const tabSet = bucketFor(this.tasks, this.activeTab, today, "all").tasks;
+  private applyAction(action: QuickAction): void {
+    switch (action.kind) {
+      case "mode":
+        this.mode = action.mode;
+        break;
+      case "budget":
+        this.budget = action.budget;
+        break;
+      case "category":
+        this.category = action.category;
+        break;
+      case "horizon":
+        this.horizon = action.horizon;
+        break;
+      case "search":
+        this.search = action.text;
+        this.searchInputEl.value = action.text;
+        break;
+      case "task":
+        void this.revealTask(action.task);
+        return;
+    }
+    this.renderFilters();
+    this.render();
+  }
 
-    for (const f of QUAD_FILTERS) {
-      const count =
-        f.id === "all"
-          ? tabSet.length
-          : tabSet.filter((t) => this.quadFilterMatch(t, f.id, today)).length;
+  // --- Filter rows ---------------------------------------------------------
 
-      const btn = this.quadBarEl.createEl("button", {
-        cls: "smart-todo-quad-btn",
-      });
-      btn.createSpan({ cls: "smart-todo-quad-label", text: f.label });
-      btn.createSpan({ cls: "smart-todo-quad-count", text: String(count) });
+  private renderFilters(): void {
+    if (!this.filtersEl) return;
+    this.filtersEl.empty();
 
-      if (f.id === this.activeQuad) btn.addClass("is-active");
-      if (count === 0 && f.id !== "all") btn.addClass("is-empty");
+    this.renderModeRow();
+    // Lanes ARE the budget axis — offering a budget chip there would be two
+    // controls for one idea, and picking "3 min" would empty three columns.
+    if (this.mode !== "lanes") this.renderBudgetRow();
+    this.renderCategoryRow();
+  }
 
+  private renderModeRow(): void {
+    const row = this.filtersEl.createDiv({ cls: "stw-row stw-modes" });
+    for (const m of MODES) {
+      const btn = row.createEl("button", { cls: "stw-mode" });
+      const ic = btn.createSpan({ cls: "stw-mode-icon" });
+      setIcon(ic, m.icon);
+      btn.createSpan({ cls: "stw-mode-label", text: m.label });
+      btn.createSpan({ cls: "stw-mode-count", text: String(this.countForMode(m.id)) });
+      if (m.id === this.mode) btn.addClass("is-active");
       btn.addEventListener("click", () => {
-        this.activeQuad = f.id;
-        this.renderQuadFilters();
+        this.mode = m.id;
+        this.renderFilters();
+        this.render();
+      });
+    }
+
+    // "When" — the seven old tabs, collapsed into one menu button.
+    const when = row.createEl("button", { cls: "stw-when" });
+    when.createSpan({
+      text: HORIZONS.find((h) => h.id === this.horizon)?.label ?? "Today",
+    });
+    setIcon(when.createSpan({ cls: "stw-when-caret" }), "chevron-down");
+    when.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      for (const h of HORIZONS) {
+        menu.addItem((item) =>
+          item
+            .setTitle(h.label)
+            .setChecked(this.horizon === h.id)
+            .onClick(() => {
+              this.horizon = h.id;
+              this.renderFilters();
+              // Rescan, don't repaint from memory: switching horizon is the
+              // moment you most expect to see a task you just added, and a
+              // stale in-memory list is what made 0.6 feel broken.
+              void this.refresh();
+            })
+        );
+      }
+      menu.showAtMouseEvent(evt as MouseEvent);
+    });
+  }
+
+  /**
+   * "I have…" — the budget row. Counts are live, so the row doubles as an
+   * answer before you click: *10 things fit in three minutes* is itself the
+   * useful fact.
+   */
+  private renderBudgetRow(): void {
+    const wrap = this.filtersEl.createDiv({ cls: "stw-budget-wrap" });
+    wrap.createDiv({ cls: "stw-row-label", text: "I have…" });
+    const row = wrap.createDiv({ cls: "stw-row stw-budgets" });
+
+    for (const b of BUDGETS) {
+      // Count against horizon + category only — holding budget out keeps the
+      // four numbers comparable instead of collapsing onto the active chip.
+      const count = this.tasks.filter(
+        (t) =>
+          matchesHorizon(t, this.horizon) &&
+          matchesCategory(t, this.category) &&
+          fitsBudget(t, b.id)
+      ).length;
+
+      const btn = row.createEl("button", { cls: "stw-budget" });
+      btn.createSpan({ cls: "stw-budget-label", text: b.label });
+      btn.createSpan({ cls: "stw-budget-count", text: String(count) });
+      if (b.id === this.budget) btn.addClass("is-active");
+      if (count === 0) btn.addClass("is-empty");
+      btn.addEventListener("click", () => {
+        this.budget = b.id;
+        this.renderFilters();
         this.render();
       });
     }
   }
 
-  /** Thin wrapper so the view doesn't re-import the predicate guts. */
-  private quadFilterMatch(task: SmartTask, id: QuadFilterId, today: Date): boolean {
-    // Mirror matchesQuadFilter without importing it everywhere; the counts
-    // row needs the same logic the bucket uses.
-    const urgent = isUrgent(task, today);
-    const important = task.important === true;
-    const unjudged = isUnjudged(task);
-    switch (id) {
-      case "do": return urgent && important;
-      case "schedule": return !urgent && important;
-      case "delegate": return urgent && !important;
-      case "drop": return !urgent && !important && !unjudged;
-      case "urgent": return urgent;
-      case "important": return important;
-      case "unjudged": return unjudged;
-      default: return true;
+  private renderCategoryRow(): void {
+    const row = this.filtersEl.createDiv({ cls: "stw-row stw-cats" });
+    const chips: Array<{ id: CategoryFilter; label: string }> = [
+      { id: "all", label: "All" },
+      ...CATEGORIES.map((c) => ({ id: c as CategoryFilter, label: CATEGORY_LABEL[c] })),
+    ];
+    for (const c of chips) {
+      const btn = row.createEl("button", { cls: "stw-cat", text: c.label });
+      if (c.id === this.category) btn.addClass("is-active");
+      if (c.id !== "all") {
+        btn.style.setProperty("--cat-color", CATEGORY_COLOR[c.id as Category]);
+        btn.addClass("has-color");
+      }
+      btn.addEventListener("click", () => {
+        this.category = c.id;
+        this.renderFilters();
+        this.render();
+      });
     }
   }
+
+  // --- Selection -----------------------------------------------------------
+
+  private get query(): PanelQuery {
+    return {
+      horizon: this.horizon,
+      // Sweep is the budget made literal: whatever the budget says fits, this
+      // is the run-through of it. Lanes show every size side by side.
+      budget: this.mode === "lanes" ? "any" : this.budget,
+      category: this.category,
+      search: this.search,
+    };
+  }
+
+  private visibleTasks(): SmartTask[] {
+    return selectTasks(this.tasks, this.query);
+  }
+
+  /** The number on each mode button — what that mode would show right now. */
+  private countForMode(mode: ViewMode): number {
+    const base = this.tasks.filter(
+      (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category)
+    );
+    if (mode === "lanes") {
+      return new Set(base.filter((t) => t.effort).map((t) => t.effort)).size;
+    }
+    if (mode === "sweep") return base.filter((t) => fitsBudget(t, "3m")).length;
+    return base.filter((t) => fitsBudget(t, this.budget)).length;
+  }
+
+  // --- Body ----------------------------------------------------------------
 
   private render(): void {
-    if (!this.listEl) return;
+    if (!this.bodyEl) return;
     const today = startOfToday();
-    this.listEl.empty();
-    this.summaryEl.empty();
+    this.bodyEl.empty();
 
     if (this.loading && this.tasks.length === 0) {
-      this.summaryEl.setText("Scanning…");
+      this.bodyEl.createDiv({ cls: "stw-empty", text: "Scanning…" });
       return;
     }
 
-    // In matrix view the 2×2 grid is the filter, so ignore the active quad
-    // button and show the whole tab set laid out by quadrant.
-    const quad = this.matrixView ? "all" : this.activeQuad;
-    const { tasks, restingCount } = bucketFor(
-      this.tasks,
-      this.activeTab,
-      today,
-      quad
-    );
-
-    const countLabel = `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
-    this.summaryEl.createSpan({ cls: "smart-todo-count", text: countLabel });
-    if (!this.matrixView && this.activeQuad !== "all") {
-      const def = QUAD_FILTERS.find((f) => f.id === this.activeQuad);
-      if (def) {
-        this.summaryEl.createSpan({
-          cls: "smart-todo-filter-tag",
-          text: `· ${def.label}`,
-        });
-      }
-    }
-
-    // The resting count is the whole point of defer: it tells you what you've
-    // deliberately chosen not to look at, so the short list feels trustworthy.
-    if (this.activeTab === "today" || this.activeTab === "week") {
-      if (restingCount > 0) {
-        this.summaryEl.createSpan({
-          cls: "smart-todo-resting",
-          text: `${restingCount} ${
-            restingCount === 1 ? "task" : "tasks"
-          } resting in the backlog.`,
-        });
-      }
-    }
+    const tasks = this.visibleTasks();
 
     if (tasks.length === 0) {
-      const empty = this.listEl.createDiv({
-        cls: "smart-todo-empty",
-        text:
-          this.activeTab === "completed"
-            ? "Nothing completed yet."
-            : "Nothing here. Clear.",
+      this.renderEmpty();
+      return;
+    }
+
+    if (this.mode === "lanes") this.renderLanes(tasks, today);
+    else if (this.mode === "sweep") this.renderSweep(tasks, today);
+    else this.renderFocus(tasks, today);
+  }
+
+  private renderEmpty(): void {
+    const empty = this.bodyEl.createDiv({ cls: "stw-empty" });
+
+    // An empty list has three very different causes and they need different
+    // next actions. Saying which one it is turns a dead end into a button.
+    if (this.tasks.length === 0) {
+      empty.createDiv({ cls: "stw-empty-head", text: "No tasks in scope." });
+      empty.createDiv({
+        cls: "stw-empty-note",
+        text: `Watching ${describeScope(this.plugin.scope)}`,
       });
-      // An empty list is ambiguous without knowing what's in scope — say it,
-      // so "no tasks" is never mistaken for "the plugin isn't working".
-      if (this.tasks.length === 0) {
+      return;
+    }
+
+    if (this.search.trim()) {
+      empty.createDiv({ cls: "stw-empty-head", text: `Nothing matches "${this.search.trim()}".` });
+      empty.createDiv({ cls: "stw-empty-note", text: "Press Enter to add it as a task." });
+      return;
+    }
+
+    if (this.budget !== "any") {
+      const untagged = this.tasks.filter(
+        (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category) && !t.effort
+      ).length;
+      empty.createDiv({ cls: "stw-empty-head", text: "Nothing fits that window." });
+      if (untagged > 0) {
+        // The honest explanation, not a shrug: a budget filter can only see
+        // tasks whose size is known.
         empty.createDiv({
-          cls: "smart-todo-empty-scope",
-          text: `Watching ${describeScope(this.plugin.scope)}`,
+          cls: "stw-empty-note",
+          text: `${untagged} task${untagged === 1 ? " has" : "s have"} no effort set, so ${
+            untagged === 1 ? "it isn't" : "they aren't"
+          } offered here.`,
+        });
+        const btn = empty.createEl("button", { cls: "stw-btn", text: "Show anything" });
+        btn.addEventListener("click", () => {
+          this.budget = "any";
+          this.renderFilters();
+          this.render();
         });
       }
       return;
     }
 
-    const ordered = this.applySort(tasks, today);
+    empty.createDiv({ cls: "stw-empty-head", text: "Nothing here. Clear." });
+  }
 
-    if (this.matrixView) {
-      this.renderMatrix(this.listEl, ordered, today);
-    } else if (this.layout === "table") {
-      this.renderTable(this.listEl, ordered, today);
-    } else if (this.quickiesGrouped()) {
-      this.renderGroupedCards(this.listEl, ordered, today);
-    } else {
-      for (const task of ordered) {
-        this.renderRow(this.listEl, task, today);
+  /**
+   * Focus: one list, sectioned by Eisenhower quadrant, with a count and a time
+   * estimate on each header. The quick-wins banner sits after the first
+   * section — close enough to the top to be a real offer, far enough down that
+   * the important work is still what you read first.
+   */
+  private renderFocus(tasks: SmartTask[], today: Date): void {
+    const grouped = groupByQuadrant(tasks, today);
+    const quickies = tasks.filter((t) => t.effort === "light");
+    let bannerPlaced = false;
+
+    for (const q of QUADRANT_ORDER) {
+      const group = grouped[q];
+      if (group.length === 0) continue;
+
+      const def = QUADRANTS.find((d) => d.id === q)!;
+      const head = this.bodyEl.createDiv({ cls: `stw-group-head is-${q}` });
+      head.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+      head.createSpan({ cls: "stw-group-title", text: def.label });
+      const minutes = estimateMinutes(group);
+      head.createSpan({
+        cls: "stw-group-tally",
+        text: minutes > 0 ? `${group.length} · ${formatDuration(minutes)}` : String(group.length),
+      });
+      head.setAttr("aria-label", def.advice);
+
+      for (const task of group) this.renderRow(this.bodyEl, task, today);
+
+      if (
+        !bannerPlaced &&
+        this.plugin.settings.showSweepBanner &&
+        quickies.length >= 2 &&
+        group.length > 0
+      ) {
+        this.renderSweepBanner(quickies);
+        bannerPlaced = true;
       }
     }
   }
 
   /**
-   * Card list with light-effort tasks pulled out into their own section at the
-   * foot: "Quickies · 3 minutes or less".
-   *
-   * The real work and the five-things-you-can-knock-off-now are different
-   * decisions, and interleaving them meant the quick ones padded the list and
-   * made Today look worse than it was. Separating them also gives the batch a
-   * name — "do the quickies" is a thing you can actually act on.
+   * The quick-wins banner. This is the element that most changes behaviour:
+   * it names the pile of small stuff as a single batch with a duration and a
+   * button, which is the difference between "41 open tasks" and "ten minutes".
    */
-  private renderGroupedCards(
-    parent: HTMLElement,
-    tasks: SmartTask[],
-    today: Date
-  ): void {
-    const quickies = tasks.filter((t) => t.effort === "light");
-    const rest = tasks.filter((t) => t.effort !== "light");
+  private renderSweepBanner(quickies: SmartTask[]): void {
+    const banner = this.bodyEl.createDiv({ cls: "stw-sweep-banner" });
+    const icon = banner.createSpan({ cls: "stw-sweep-banner-icon" });
+    setIcon(icon, "zap");
+    const text = banner.createDiv({ cls: "stw-sweep-banner-text" });
+    text.createDiv({
+      cls: "stw-sweep-banner-head",
+      text: `${quickies.length} quick win${quickies.length === 1 ? "" : "s"}`,
+    });
+    text.createDiv({
+      cls: "stw-sweep-banner-sub",
+      text: `about ${formatDuration(estimateMinutes(quickies))}`,
+    });
+    const btn = banner.createEl("button", { cls: "stw-sweep-banner-btn", text: "Sweep" });
+    btn.addEventListener("click", () => this.startSweep(quickies));
+  }
 
-    for (const task of rest) this.renderRow(parent, task, today);
+  /** Sweep mode: the queue, previewed, with one button that starts the clock. */
+  private renderSweep(tasks: SmartTask[], today: Date): void {
+    const queue = tasks.filter((t) => t.effort === "light");
 
-    if (quickies.length === 0) return;
-
-    // Only label the section when there's something above it to distinguish
-    // it from — an all-quickies list doesn't need a header saying so.
-    if (rest.length > 0) {
-      const head = parent.createDiv({ cls: "smart-todo-group-head" });
-      head.createSpan({ cls: "smart-todo-group-title", text: QUICKIE_HEADING });
-      head.createSpan({
-        cls: "smart-todo-group-tally",
-        text: String(quickies.length),
-      });
+    const head = this.bodyEl.createDiv({ cls: "stw-sweep-intro" });
+    head.createDiv({
+      cls: "stw-sweep-intro-head",
+      text: queue.length === 0 ? "Nothing under 3 minutes." : "Everything under 3 minutes",
+    });
+    head.createDiv({
+      cls: "stw-sweep-intro-sub",
+      text:
+        queue.length === 0
+          ? "Tag a task's effort as 3 min and it shows up here."
+          : `${queue.length} task${queue.length === 1 ? "" : "s"} · about ${formatDuration(
+              estimateMinutes(queue)
+            )}`,
+    });
+    if (queue.length > 0) {
+      const btn = head.createEl("button", { cls: "stw-btn is-primary", text: "Start sweep" });
+      btn.addEventListener("click", () => this.startSweep(queue));
     }
-    const body = parent.createDiv({ cls: "smart-todo-group-body" });
-    for (const task of quickies) this.renderRow(body, task, today);
+
+    for (const task of queue) this.renderRow(this.bodyEl, task, today);
+  }
+
+  private startSweep(queue: SmartTask[]): void {
+    new SweepModal(this.app, queue, this.plugin.settings.sweepSeconds, () =>
+      void this.refresh()
+    ).open();
   }
 
   /**
-   * The 2×2 Eisenhower grid: four quadrant cells, each holding the compact
-   * rows that fall in it. Urgent on the left column, Important on the top row,
-   * so Q1 (Do) sits top-left where the eye lands first.
+   * Start a sweep over whatever is currently in scope, for the command palette.
+   *
+   * Deliberately built from `visibleTasks()` rather than the whole vault: if
+   * you've narrowed to Betaworks, a sweep you start from the keyboard should
+   * be the Betaworks quick wins, not every loose end you own.
    */
-  private renderMatrix(parent: HTMLElement, tasks: SmartTask[], today: Date): void {
-    const grid = parent.createDiv({ cls: "smart-todo-matrix" });
+  sweepNow(): boolean {
+    const queue = this.visibleTasks().filter((t) => t.effort === "light");
+    if (queue.length === 0) return false;
+    this.startSweep(queue);
+    return true;
+  }
 
-    const byQuad: Record<Quadrant, SmartTask[]> = {
-      do: [],
-      schedule: [],
-      delegate: [],
-      drop: [],
-    };
-    for (const t of tasks) byQuad[quadrantOf(t, today)].push(t);
+  /**
+   * Lanes: the kanban-by-size view from the mockups. In a narrow sidebar the
+   * columns become stacked sections with a sticky header; in a wide leaf they
+   * sit side by side. Same DOM either way — it's a CSS decision, not a mode.
+   */
+  private renderLanes(tasks: SmartTask[], today: Date): void {
+    const lanes = this.bodyEl.createDiv({ cls: "stw-lanes" });
 
-    // Grid order: top-left Do, top-right Schedule, bottom-left Delegate,
-    // bottom-right Drop — the canonical layout.
-    const order: Quadrant[] = ["do", "schedule", "delegate", "drop"];
-    for (const q of order) {
-      const def = QUADRANTS.find((d) => d.id === q)!;
-      const cell = grid.createDiv({ cls: `smart-todo-quad-cell is-${q}` });
-      cell.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+    for (const effort of EFFORTS) {
+      const group = tasks.filter((t) => t.effort === effort);
+      const lane = lanes.createDiv({ cls: `stw-lane is-${effort}` });
 
-      const head = cell.createDiv({ cls: "smart-todo-quad-head" });
-      head.createSpan({ cls: "smart-todo-quad-title", text: def.label });
+      const head = lane.createDiv({ cls: "stw-lane-head" });
+      head.createSpan({ cls: "stw-lane-title", text: EFFORT_LABEL[effort] });
       head.createSpan({
-        cls: "smart-todo-quad-advice",
-        text: def.advice,
+        cls: "stw-lane-tally",
+        text:
+          group.length === 0
+            ? "—"
+            : `${group.length} · ${formatDuration(group.length * EFFORT_MINUTES[effort])}`,
       });
-      head.createSpan({
-        cls: "smart-todo-quad-tally",
-        text: String(byQuad[q].length),
-      });
+      head.createDiv({ cls: "stw-lane-blurb", text: EFFORT_BLURB[effort] });
 
-      const body = cell.createDiv({ cls: "smart-todo-quad-body" });
-      if (byQuad[q].length === 0) {
-        body.createDiv({ cls: "smart-todo-quad-empty", text: "—" });
+      const body = lane.createDiv({ cls: "stw-lane-body" });
+      if (group.length === 0) {
+        body.createDiv({ cls: "stw-lane-empty", text: "Empty" });
         continue;
       }
-      for (const task of byQuad[q]) {
-        this.renderRow(body, task, today);
-      }
+      for (const task of group) this.renderRow(body, task, today);
     }
+
+    const untagged = tasks.filter((t) => !t.effort);
+    if (untagged.length === 0) return;
+
+    // Unsized work is invisible to every budget filter, so lanes is the one
+    // place that has to show it — otherwise it quietly never gets triaged.
+    const lane = lanes.createDiv({ cls: "stw-lane is-untagged" });
+    const head = lane.createDiv({ cls: "stw-lane-head" });
+    head.createSpan({ cls: "stw-lane-title", text: "Unsized" });
+    head.createSpan({ cls: "stw-lane-tally", text: String(untagged.length) });
+    head.createDiv({ cls: "stw-lane-blurb", text: "No effort set — hidden from budgets" });
+    const body = lane.createDiv({ cls: "stw-lane-body" });
+    for (const task of untagged) this.renderRow(body, task, today);
   }
 
-  /**
-   * In table layout the user drives the sort via column headers. In card layout
-   * (or table with no explicit sort chosen) we keep the smart triage order the
-   * bucket already produced.
-   */
-  private applySort(tasks: SmartTask[], today: Date): SmartTask[] {
-    if (this.layout !== "table" || !this.sort) return tasks;
-    const { key, dir } = this.sort;
-    const mul = dir === "asc" ? 1 : -1;
-    // Quadrant priority for sorting: Do first, then Schedule, Delegate, Drop.
-    const quadRank: Record<Quadrant, number> = {
-      do: 0,
-      schedule: 1,
-      delegate: 2,
-      drop: 3,
-    };
-    const val = (t: SmartTask): number | string => {
-      switch (key) {
-        case "due":
-          return t.due ? t.due.getTime() : Number.POSITIVE_INFINITY;
-        case "pushes":
-          return t.pushes;
-        case "effort":
-          return t.effort ? EFFORT_WEIGHT[t.effort] : 0;
-        case "project":
-          return (t.project ?? "").toLowerCase();
-        case "quadrant":
-          return quadRank[quadrantOf(t, today)];
-        default:
-          return t.title.toLowerCase();
-      }
-    };
-    return [...tasks].sort((a, b) => {
-      const av = val(a);
-      const bv = val(b);
-      if (av < bv) return -1 * mul;
-      if (av > bv) return 1 * mul;
-      return 0;
-    });
-  }
+  // --- Row -----------------------------------------------------------------
 
   private renderRow(parent: HTMLElement, task: SmartTask, today: Date): void {
-    const row = parent.createDiv({ cls: "smart-todo-row" });
+    const row = parent.createDiv({ cls: "stw-row-task" });
     if (task.status === "done") row.addClass("is-done");
     if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
       row.addClass("is-overdue");
@@ -485,119 +656,91 @@ export class SmartTodoView extends ItemView {
     if (isResting(task, today)) row.addClass("is-resting");
 
     const checkbox = row.createEl("input", {
-      cls: "smart-todo-checkbox",
+      cls: "stw-check",
       attr: { type: "checkbox" },
     }) as HTMLInputElement;
     checkbox.checked = task.status === "done";
     checkbox.addEventListener("click", async (evt) => {
       evt.stopPropagation();
       checkbox.disabled = true;
-      const ok = await safeWrite(() =>
-        toggleTaskDone(this.app, task, task.status === "open")
-      );
+      const ok = await safeWrite(() => toggleTaskDone(this.app, task, task.status === "open"));
       if (!ok) checkbox.checked = task.status === "done";
       await this.refresh();
     });
 
-    const main = row.createDiv({ cls: "smart-todo-main" });
+    const main = row.createDiv({ cls: "stw-task-main" });
 
-    const titleRow = main.createDiv({ cls: "smart-todo-title-row" });
-
-    // Importance star, left of the title: filled = important, hollow = not,
-    // faint "?" = unjudged. Click cycles unjudged → important → not → unjudged
-    // so the whole matrix can be set without leaving the panel.
-    this.renderImportanceToggle(titleRow, task);
-
-    const titleEl = titleRow.createDiv({
-      cls: "smart-todo-title",
+    const titleEl = main.createDiv({
+      cls: "stw-task-title",
       text: task.title || "(untitled task)",
     });
-    // Click edits. Reaching the markdown is still one click away (the editor's
-    // "Open in note"), but editing in place is the common case and used to be
-    // the impossible one.
     titleEl.addEventListener("click", () => this.openEditor(task));
-    titleEl.setAttr("title", "Click to edit · " + `${task.filePath}:${task.lineNumber + 1}`);
+    titleEl.setAttr("title", `Click to edit · ${task.filePath}:${task.lineNumber + 1}`);
 
-    const meta = main.createDiv({ cls: "smart-todo-meta" });
+    const meta = main.createDiv({ cls: "stw-task-meta" });
 
-    // Quadrant pill: the live Eisenhower classification. Colored by quadrant,
-    // labelled with the verb (Do / Schedule / Delegate / Drop). Read-only — it
-    // reflects urgency (from the date) × importance (the star), both set
-    // elsewhere, so it's a result, not another control to fiddle with.
-    if (task.status === "open") {
-      const q = quadrantOf(task, today);
-      const def = QUADRANTS.find((d) => d.id === q)!;
-      const qpill = meta.createSpan({
-        cls: `smart-todo-quadpill is-${q}`,
-        text: def.label,
-        attr: { "aria-label": `${def.label} — ${def.advice}` },
-      });
-      qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
-      if (isUnjudged(task)) qpill.addClass("is-unjudged");
-    }
+    this.renderCategoryChip(meta, task);
 
-    if (task.due) {
-      meta.createSpan({
-        cls: "smart-todo-date",
-        text: this.humanDate(task.due, today),
-      });
-    }
-
-    if (isResting(task, today)) {
-      meta.createSpan({
-        cls: "smart-todo-date is-defer",
-        text: `rests until ${this.humanDate(task.defer, today)}`,
-      });
-    }
-
-    // Effort is tagged on everything but only Quickies get a pill. A
-    // Moderate/Heavy badge on every row was decoration — it never changed what
-    // you did next. "3 minutes or less" does. Moderate/Heavy are still set and
-    // changed from the editor, and still drive sort order.
-    // When quickie grouping is on, the section header already says it, so the
-    // pill would be saying it twice.
-    if (task.effort === "light" && !this.quickiesGrouped()) {
+    // Effort reads as a duration now, not a weight class — "3 min" is a fact
+    // you can act on, "Light" was a label you had to translate first.
+    if (task.effort) {
       const pill = meta.createSpan({
-        cls: "smart-todo-effort is-light",
-        text: EFFORT_LABEL.light,
-        attr: { "aria-label": "3 minutes or less" },
+        cls: `stw-effort is-${task.effort}`,
+        attr: { "aria-label": "Click to change" },
       });
-      const openMenu = (evt: MouseEvent): void => {
+      if (task.effort === "light") setIcon(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
+      pill.createSpan({ text: EFFORT_LABEL[task.effort] });
+      const open = (evt: MouseEvent): void => {
         evt.preventDefault();
         evt.stopPropagation();
         this.showEffortMenu(evt, task);
       };
-      pill.addEventListener("click", openMenu);
-      pill.addEventListener("contextmenu", openMenu);
+      pill.addEventListener("click", open);
+      pill.addEventListener("contextmenu", open);
+    } else {
+      const pill = meta.createSpan({ cls: "stw-effort is-unset", text: "+ size" });
+      pill.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.showEffortMenu(evt as MouseEvent, task);
+      });
     }
 
+    if (task.due) {
+      meta.createSpan({ cls: "stw-date", text: this.humanDate(task.due, today) });
+    }
+    if (isResting(task, today)) {
+      meta.createSpan({
+        cls: "stw-date is-defer",
+        text: `rests until ${this.humanDate(task.defer as Date, today)}`,
+      });
+    }
     if (task.pushes > 0) {
       const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
       meta.createSpan({
-        cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
+        cls: `stw-pushes${warn ? " is-warn" : ""}`,
         text: `↻ ${task.pushes}`,
         attr: {
           "aria-label": `Pushed ${task.pushes} ${task.pushes === 1 ? "time" : "times"}`,
         },
       });
     }
-
-    this.renderCategory(meta, task);
-
     if (task.assigned) {
-      meta.createSpan({ cls: "smart-todo-assigned", text: `@${task.assigned}` });
+      meta.createSpan({ cls: "stw-assigned", text: `@${task.assigned}` });
+    }
+    if (task.status === "done" && task.doneDate) {
+      meta.createSpan({ cls: "stw-date", text: `done ${formatDate(task.doneDate)}` });
     }
 
-    if (task.status === "done" && task.doneDate) {
-      meta.createSpan({
-        cls: "smart-todo-date",
-        text: `done ${formatDate(task.doneDate)}`,
-      });
-    }
+    const actions = row.createDiv({ cls: "stw-task-actions" });
+    // Importance moved from a star beside the title to the right-hand gutter:
+    // in Focus the quadrant heading already states the judgment, so the control
+    // only needs to be reachable, not loud.
+    this.renderImportanceToggle(actions, task);
 
     if (task.status === "open") {
-      const pushBtn = row.createEl("button", {
-        cls: "smart-todo-push",
+      const pushBtn = actions.createEl("button", {
+        cls: "stw-icon-btn is-ghost",
         attr: { "aria-label": "Push 1 day" },
       });
       setIcon(pushBtn, "chevrons-right");
@@ -611,16 +754,15 @@ export class SmartTodoView extends ItemView {
   }
 
   /**
-   * Importance star. Three states cycle on click:
+   * Importance. Three states cycle on click:
    *   unjudged (?) → important (★) → not important (☆) → unjudged
-   * Right-click clears straight back to unjudged. This is the one control that
-   * sets the "important" axis; urgency is never set by hand.
+   * Right-click clears to unjudged. This is the only control that sets the
+   * "important" axis; urgency is always derived from the due date.
    */
   private renderImportanceToggle(parent: HTMLElement, task: SmartTask): void {
-    const state =
-      task.important === true ? "yes" : task.important === false ? "no" : "unjudged";
+    const state = task.important === true ? "yes" : task.important === false ? "no" : "unjudged";
     const star = parent.createSpan({
-      cls: `smart-todo-star is-${state}`,
+      cls: `stw-star is-${state}`,
       attr: {
         "aria-label":
           state === "yes"
@@ -632,21 +774,15 @@ export class SmartTodoView extends ItemView {
     });
     setIcon(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
 
-    const cycle = async (): Promise<void> => {
-      const next = task.important === null ? true : task.important === true ? false : null;
-      await safeWrite(() => setTaskImportant(this.app, task, next));
-      await this.refresh();
-    };
     star.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      void cycle();
+      const next = task.important === null ? true : task.important === true ? false : null;
+      void safeWrite(() => setTaskImportant(this.app, task, next)).then(() => this.refresh());
     });
     star.addEventListener("contextmenu", (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
-      void safeWrite(() => setTaskImportant(this.app, task, null)).then(() =>
-        this.refresh()
-      );
+      void safeWrite(() => setTaskImportant(this.app, task, null)).then(() => this.refresh());
     });
   }
 
@@ -655,7 +791,7 @@ export class SmartTodoView extends ItemView {
     for (const effort of EFFORTS) {
       menu.addItem((item) =>
         item
-          .setTitle(effort.charAt(0).toUpperCase() + effort.slice(1))
+          .setTitle(EFFORT_LABEL[effort])
           .setChecked(task.effort === effort)
           .onClick(async () => {
             await safeWrite(() => setTaskEffort(this.app, task, effort as Effort));
@@ -665,7 +801,7 @@ export class SmartTodoView extends ItemView {
     }
     menu.addSeparator();
     menu.addItem((item) =>
-      item.setTitle("Clear effort").onClick(async () => {
+      item.setTitle("Clear size").onClick(async () => {
         await safeWrite(() => setTaskEffort(this.app, task, null));
         await this.refresh();
       })
@@ -673,39 +809,29 @@ export class SmartTodoView extends ItemView {
     menu.showAtMouseEvent(evt);
   }
 
-  /**
-   * Category chip: a colored dot + name, or a faint "+ Category" affordance
-   * when unset. Click opens a three-item menu — Betaworks / Personal / Health
-   * — because the whole point of collapsing eleven free-text projects into
-   * three categories is that picking one should never need typing.
-   *
-   * A legacy, un-migrated value still renders under its own hashed color so
-   * it's visibly *not* one of the three until it's folded.
-   */
-  private renderCategory(parent: HTMLElement, task: SmartTask): void {
-    const chip = parent.createSpan({ cls: "smart-todo-project" });
+  private renderCategoryChip(parent: HTMLElement, task: SmartTask): void {
+    const chip = parent.createSpan({ cls: "stw-cat-chip" });
     const canonical = asCategory(task.project);
 
     if (canonical) {
       chip.createSpan({
-        cls: "smart-todo-project-dot",
+        cls: "stw-dot",
         attr: { style: `background:${CATEGORY_COLOR[canonical]}` },
       });
-      chip.createSpan({
-        cls: "smart-todo-project-name",
-        text: CATEGORY_LABEL[canonical],
-      });
+      chip.createSpan({ text: CATEGORY_LABEL[canonical] });
     } else if (task.project) {
+      // A legacy, un-folded value keeps its own hashed color so it's visibly
+      // not one of the three until the migration has run.
       chip.addClass("is-legacy");
       chip.createSpan({
-        cls: "smart-todo-project-dot",
+        cls: "stw-dot",
         attr: { style: `background:${projectColor(task.project)}` },
       });
-      chip.createSpan({ cls: "smart-todo-project-name", text: task.project });
+      chip.createSpan({ text: task.project });
       chip.setAttr("aria-label", "Not one of the three categories — click to set");
     } else {
       chip.addClass("is-unset");
-      chip.setText("+ Category");
+      chip.setText("+ category");
     }
 
     chip.addEventListener("click", (evt) => {
@@ -739,7 +865,6 @@ export class SmartTodoView extends ItemView {
     menu.showAtMouseEvent(evt);
   }
 
-  /** Open the full editor for a task and write back whatever changed. */
   private openEditor(task: SmartTask): void {
     new EditTaskModal(
       this.app,
@@ -753,144 +878,11 @@ export class SmartTodoView extends ItemView {
     ).open();
   }
 
-  /** Is the Quickies section active for the current layout? */
-  private quickiesGrouped(): boolean {
-    return (
-      this.plugin.settings.groupQuickies &&
-      this.layout === "card" &&
-      !this.matrixView
-    );
-  }
-
-  /** Onda-style table: sortable headers + one row per task. */
-  private renderTable(parent: HTMLElement, tasks: SmartTask[], today: Date): void {
-    const table = parent.createEl("table", { cls: "smart-todo-table" });
-    const thead = table.createEl("thead");
-    const headRow = thead.createEl("tr");
-
-    const cols: Array<{ key: SortKey; label: string }> = [
-      { key: "title", label: "Task" },
-      { key: "quadrant", label: "Priority" },
-      { key: "due", label: "Due" },
-      { key: "pushes", label: "Pushes" },
-      { key: "effort", label: "Effort" },
-      { key: "project", label: "Project" },
-    ];
-    for (const col of cols) {
-      const th = headRow.createEl("th", { cls: "smart-todo-th", text: col.label });
-      if (this.sort?.key === col.key) {
-        th.addClass("is-sorted");
-        th.createSpan({
-          cls: "smart-todo-sort-caret",
-          text: this.sort.dir === "asc" ? " ▲" : " ▼",
-        });
-      }
-      th.addEventListener("click", () => {
-        if (this.sort?.key === col.key) {
-          this.sort = {
-            key: col.key,
-            dir: this.sort.dir === "asc" ? "desc" : "asc",
-          };
-        } else {
-          this.sort = { key: col.key, dir: "asc" };
-        }
-        this.render();
-      });
-    }
-
-    const tbody = table.createEl("tbody");
-    for (const task of tasks) {
-      const tr = tbody.createEl("tr", { cls: "smart-todo-trow" });
-      if (task.status === "done") tr.addClass("is-done");
-      if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
-        tr.addClass("is-overdue");
-      }
-
-      // Task cell: checkbox + title
-      const titleTd = tr.createEl("td", { cls: "smart-todo-td-title" });
-      const cb = titleTd.createEl("input", {
-        attr: { type: "checkbox" },
-        cls: "smart-todo-checkbox",
-      }) as HTMLInputElement;
-      cb.checked = task.status === "done";
-      cb.addEventListener("click", async (evt) => {
-        evt.stopPropagation();
-        cb.disabled = true;
-        await safeWrite(() =>
-          toggleTaskDone(this.app, task, task.status === "open")
-        );
-        await this.refresh();
-      });
-      const titleSpan = titleTd.createSpan({
-        cls: "smart-todo-title",
-        text: task.title || "(untitled task)",
-      });
-      titleSpan.addEventListener("click", () => this.openEditor(task));
-
-      // Priority: importance star + quadrant pill
-      const quadTd = tr.createEl("td", { cls: "smart-todo-td-quadrant" });
-      this.renderImportanceToggle(quadTd, task);
-      if (task.status === "open") {
-        const q = quadrantOf(task, today);
-        const def = QUADRANTS.find((d) => d.id === q)!;
-        const qpill = quadTd.createSpan({
-          cls: `smart-todo-quadpill is-${q}`,
-          text: def.label,
-          attr: { "aria-label": def.advice },
-        });
-        qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
-        if (isUnjudged(task)) qpill.addClass("is-unjudged");
-      } else {
-        quadTd.createSpan({ cls: "smart-todo-quad-na", text: "—" });
-      }
-
-      // Due
-      const dueTd = tr.createEl("td", { cls: "smart-todo-td-due" });
-      dueTd.setText(task.due ? this.humanDate(task.due, today) : "—");
-
-      // Pushes
-      const pushTd = tr.createEl("td", { cls: "smart-todo-td-pushes" });
-      if (task.pushes > 0) {
-        const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
-        pushTd.createSpan({
-          cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
-          text: String(task.pushes),
-        });
-      } else {
-        pushTd.setText("—");
-      }
-
-      // Effort — Quickie only, same rule as the card rows. The column stays so
-      // the table can still be sorted by effort, it just doesn't print a badge
-      // for Moderate/Heavy.
-      const effTd = tr.createEl("td", { cls: "smart-todo-td-effort" });
-      if (task.effort === "light") {
-        const effPill = effTd.createSpan({
-          cls: "smart-todo-effort is-light",
-          text: EFFORT_LABEL.light,
-        });
-        effPill.addEventListener("click", (evt) => {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.showEffortMenu(evt, task);
-        });
-      } else {
-        effTd.setText("—");
-      }
-
-      // Category
-      const projTd = tr.createEl("td", { cls: "smart-todo-td-project" });
-      this.renderCategory(projTd, task);
-    }
-  }
-
-  /** Open the source note and park the cursor on the task's line. */
   private async revealTask(task: SmartTask): Promise<void> {
     const leaf = this.app.workspace.getLeaf(false);
-    await leaf.openFile(
-      this.app.vault.getAbstractFileByPath(task.filePath) as any,
-      { eState: { line: task.lineNumber } }
-    );
+    await leaf.openFile(this.app.vault.getAbstractFileByPath(task.filePath) as any, {
+      eState: { line: task.lineNumber },
+    });
   }
 
   private humanDate(date: Date, today: Date): string {
@@ -900,9 +892,7 @@ export class SmartTodoView extends ItemView {
     if (isSameDay(date, addDays(today, -1))) return "Yesterday";
     const days = Math.round((date.getTime() - today.getTime()) / 86400000);
     if (days < 0) return `${formatDate(date)} (${Math.abs(days)}d late)`;
-    if (days <= 6) {
-      return date.toLocaleDateString(undefined, { weekday: "short" });
-    }
+    if (days <= 6) return date.toLocaleDateString(undefined, { weekday: "short" });
     return formatDate(date);
   }
 }

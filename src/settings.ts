@@ -5,7 +5,13 @@
 
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { parseScope, primaryManagedFile } from "./scope";
-import { DEFAULT_MANAGED_FILE, Layout } from "./types";
+import {
+  ACCENTS,
+  Accent,
+  DEFAULT_MANAGED_FILE,
+  MODES,
+  ViewMode,
+} from "./types";
 import type SmartTodoPlugin from "./main";
 
 export class SmartTodoSettingTab extends PluginSettingTab {
@@ -101,20 +107,46 @@ export class SmartTodoSettingTab extends PluginSettingTab {
 
     el.createEl("h3", { text: "Display" });
 
+    // The accent is a colour, so the control is the colour — a dropdown of
+    // colour *names* makes you click twice to see what you picked.
+    const accentSetting = new Setting(el)
+      .setName("Accent")
+      .setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
+    const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
+    const paintAccents = (): void => {
+      accentRow.empty();
+      for (const id of Object.keys(ACCENTS) as Accent[]) {
+        const def = ACCENTS[id];
+        const btn = accentRow.createEl("button", { cls: "smart-todo-accent" });
+        btn.style.setProperty("--swatch", def.base);
+        btn.createSpan({ cls: "smart-todo-accent-swatch" });
+        btn.createSpan({ text: def.label });
+        if (this.plugin.settings.accent === id) btn.addClass("is-active");
+        btn.addEventListener("click", async () => {
+          this.plugin.settings.accent = id;
+          await this.plugin.saveSettings();
+          paintAccents();
+          // A full rebuild, not a refresh: the accent lives in custom
+          // properties on the root element, which only onOpen sets.
+          this.plugin.rebuildViews();
+        });
+      }
+    };
+    paintAccents();
+
     new Setting(el)
-      .setName("Default layout")
-      .setDesc("Card rows, or an Onda-style sortable table.")
-      .addDropdown((dd) =>
-        dd
-          .addOption("card", "Cards")
-          .addOption("table", "Table")
-          .setValue(this.plugin.settings.defaultLayout)
-          .onChange(async (value) => {
-            this.plugin.settings.defaultLayout = value as Layout;
-            await this.plugin.saveSettings();
-            this.plugin.refreshViews();
-          })
-      );
+      .setName("Opens in")
+      .setDesc(
+        "Which mode the panel starts in. Focus groups by Eisenhower quadrant, " +
+          "Sweep runs the timer, Lanes shows the effort board."
+      )
+      .addDropdown((dd) => {
+        for (const m of MODES) dd.addOption(m.id, m.label);
+        dd.setValue(this.plugin.settings.defaultMode).onChange(async (value) => {
+          this.plugin.settings.defaultMode = value as ViewMode;
+          await this.plugin.saveSettings();
+        });
+      });
 
     new Setting(el)
       .setName("Pushes warning threshold")
@@ -135,20 +167,47 @@ export class SmartTodoSettingTab extends PluginSettingTab {
           })
       );
 
+    el.createEl("h3", { text: "Sweep" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "A sweep is a timed run through the three-minute tasks: one at a " +
+        "time, with Done / Skip / Takes longer on the keyboard.",
+    });
+
     new Setting(el)
-      .setName("Group Quickies")
+      .setName("Offer a sweep in the list")
       .setDesc(
-        "Collect light-effort tasks into a \"Quickies · 3 minutes or less\" " +
-          "section at the foot of the list. Effort is still tagged on every " +
-          "task either way — this only changes what the panel shows."
+        "Shows a \"you have N quick wins\" banner inside the task list when " +
+          "there are at least two. Turn this off if you'd rather only reach " +
+          "Sweep from the mode row."
       )
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.groupQuickies)
+          .setValue(this.plugin.settings.showSweepBanner)
           .onChange(async (value) => {
-            this.plugin.settings.groupQuickies = value;
+            this.plugin.settings.showSweepBanner = value;
             await this.plugin.saveSettings();
             this.plugin.refreshViews();
+          })
+      );
+
+    new Setting(el)
+      .setName("Seconds per task")
+      .setDesc(
+        "The countdown for each task in a sweep. Three minutes is the point " +
+          "of the light-effort tag, so that's the default; going over doesn't " +
+          "stop you, it just turns the clock red."
+      )
+      .addText((text) =>
+        text
+          .setValue(String(this.plugin.settings.sweepSeconds))
+          .onChange(async (value) => {
+            const n = Number(value);
+            if (Number.isFinite(n) && n >= 15) {
+              this.plugin.settings.sweepSeconds = Math.floor(n);
+              await this.plugin.saveSettings();
+            }
           })
       );
 

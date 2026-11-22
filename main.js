@@ -22,27 +22,58 @@ __export(main_exports, {
   default: () => SmartTodoPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian7 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/types.ts
-var EFFORTS = ["light", "moderate", "heavy"];
+var EFFORTS = ["light", "moderate", "heavy", "deep"];
 var EFFORT_WEIGHT = {
+  deep: 4,
   heavy: 3,
   moderate: 2,
   light: 1
 };
 var EFFORT_LABEL = {
-  light: "Quickie",
-  moderate: "Moderate",
-  heavy: "Heavy"
+  light: "3 min",
+  moderate: "15 min",
+  heavy: "1 hour",
+  deep: "Deep work"
 };
-var QUICKIE_HEADING = "Quickies \xB7 3 minutes or less";
-var QUADRANTS = [
-  { id: "do", urgent: true, important: true, label: "Do", advice: "Do now" },
-  { id: "schedule", urgent: false, important: true, label: "Schedule", advice: "Decide when" },
-  { id: "delegate", urgent: true, important: false, label: "Delegate", advice: "Delegate / quick-win" },
-  { id: "drop", urgent: false, important: false, label: "Drop", advice: "Drop or defer" }
+var EFFORT_MINUTES = {
+  light: 3,
+  moderate: 15,
+  heavy: 60,
+  deep: 120
+};
+var EFFORT_BLURB = {
+  light: "Clear them in one sitting",
+  moderate: "Between meetings",
+  heavy: "Needs a block",
+  deep: "More than an hour"
+};
+var BUDGETS = [
+  { id: "3m", label: "3 min", fits: ["light"] },
+  { id: "15m", label: "15 min", fits: ["light", "moderate"] },
+  { id: "1h", label: "1 hour", fits: ["light", "moderate", "heavy"] },
+  { id: "any", label: "Any", fits: ["light", "moderate", "heavy", "deep"] }
 ];
+var MODES = [
+  { id: "focus", label: "Focus", icon: "sun" },
+  { id: "sweep", label: "Sweep", icon: "zap" },
+  { id: "lanes", label: "Lanes", icon: "columns-3" }
+];
+var HORIZONS = [
+  { id: "today", label: "Today" },
+  { id: "week", label: "This week" },
+  { id: "all", label: "Everything" },
+  { id: "done", label: "Done" }
+];
+var QUADRANTS = [
+  { id: "do", urgent: true, important: true, label: "Do first", advice: "Urgent and important" },
+  { id: "schedule", urgent: false, important: true, label: "Schedule", advice: "Important, not urgent" },
+  { id: "delegate", urgent: true, important: false, label: "Delegate", advice: "Urgent, not important" },
+  { id: "drop", urgent: false, important: false, label: "Drop", advice: "Neither \u2014 let it go" }
+];
+var QUADRANT_ORDER = ["do", "schedule", "delegate", "drop"];
 function quadrantFor(urgent, important) {
   if (urgent && important)
     return "do";
@@ -53,21 +84,37 @@ function quadrantFor(urgent, important) {
   return "drop";
 }
 var QUADRANT_COLOR = {
-  do: "hsl(4, 72%, 54%)",
-  // red — fire
-  schedule: "hsl(210, 68%, 54%)",
-  // blue — plan
-  delegate: "hsl(38, 82%, 52%)",
-  // amber — hand off
+  do: "hsl(3, 72%, 56%)",
+  // OmniFocus overdue red — fire
+  schedule: "hsl(240, 18%, 51%)",
+  // #6B6B99 — plan
+  delegate: "hsl(36, 100%, 48%)",
+  // OmniFocus flag orange — hand off
   drop: "hsl(220, 9%, 55%)"
   // grey — let go
+};
+var ACCENTS = {
+  // #6B6B99 — John's OmniFocus title indigo, converted to HSL so the strong
+  // variant is a pure lightness step rather than a second eyeballed hex.
+  omnifocus: {
+    label: "OmniFocus indigo",
+    base: "hsl(240, 18%, 51%)",
+    strong: "hsl(240, 22%, 38%)"
+  },
+  blue: { label: "Blue", base: "hsl(214, 72%, 42%)", strong: "hsl(214, 78%, 32%)" },
+  green: { label: "Forest green", base: "hsl(149, 61%, 20%)", strong: "hsl(149, 61%, 14%)" },
+  slate: { label: "Slate", base: "hsl(215, 25%, 35%)", strong: "hsl(215, 28%, 25%)" }
 };
 var DEFAULT_MANAGED_FILE = "Tasks.md";
 var DEFAULT_SETTINGS = {
   managedFiles: DEFAULT_MANAGED_FILE,
   pushesWarnThreshold: 3,
   defaultLayout: "card",
-  groupQuickies: true
+  groupQuickies: true,
+  accent: "omnifocus",
+  defaultMode: "focus",
+  sweepSeconds: 180,
+  showSweepBanner: true
 };
 var CATEGORIES = ["betaworks", "personal", "health"];
 var CATEGORY_LABEL = {
@@ -123,25 +170,6 @@ function categoryFor(raw) {
     return null;
   return (_b = (_a = asCategory(v)) != null ? _a : CATEGORY_ALIASES[v]) != null ? _b : "personal";
 }
-var TABS = [
-  { id: "today", label: "Today" },
-  { id: "tomorrow", label: "Tomorrow" },
-  { id: "week", label: "This Week" },
-  { id: "overdue", label: "Overdue" },
-  { id: "backlog", label: "Backlog" },
-  { id: "completed", label: "Completed" },
-  { id: "assigned", label: "Assigned" }
-];
-var QUAD_FILTERS = [
-  { id: "all", label: "All" },
-  { id: "do", label: "Urgent & Important" },
-  { id: "schedule", label: "Important \xB7 Not urgent" },
-  { id: "delegate", label: "Urgent \xB7 Not important" },
-  { id: "drop", label: "Neither" },
-  { id: "urgent", label: "Just Urgent" },
-  { id: "important", label: "Just Important" },
-  { id: "unjudged", label: "Needs review" }
-];
 function projectColor(project) {
   let hash = 0;
   for (let i = 0; i < project.length; i++) {
@@ -243,7 +271,7 @@ function isSameDay(a, b) {
 }
 function normalizeEffort(value) {
   const v = value.trim().toLowerCase();
-  if (v === "light" || v === "moderate" || v === "heavy")
+  if (v === "light" || v === "moderate" || v === "heavy" || v === "deep")
     return v;
   return null;
 }
@@ -383,13 +411,37 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     el.createEl("h3", { text: "Display" });
-    new import_obsidian.Setting(el).setName("Default layout").setDesc("Card rows, or an Onda-style sortable table.").addDropdown(
-      (dd) => dd.addOption("card", "Cards").addOption("table", "Table").setValue(this.plugin.settings.defaultLayout).onChange(async (value) => {
-        this.plugin.settings.defaultLayout = value;
+    const accentSetting = new import_obsidian.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
+    const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
+    const paintAccents = () => {
+      accentRow.empty();
+      for (const id of Object.keys(ACCENTS)) {
+        const def = ACCENTS[id];
+        const btn = accentRow.createEl("button", { cls: "smart-todo-accent" });
+        btn.style.setProperty("--swatch", def.base);
+        btn.createSpan({ cls: "smart-todo-accent-swatch" });
+        btn.createSpan({ text: def.label });
+        if (this.plugin.settings.accent === id)
+          btn.addClass("is-active");
+        btn.addEventListener("click", async () => {
+          this.plugin.settings.accent = id;
+          await this.plugin.saveSettings();
+          paintAccents();
+          this.plugin.rebuildViews();
+        });
+      }
+    };
+    paintAccents();
+    new import_obsidian.Setting(el).setName("Opens in").setDesc(
+      "Which mode the panel starts in. Focus groups by Eisenhower quadrant, Sweep runs the timer, Lanes shows the effort board."
+    ).addDropdown((dd) => {
+      for (const m of MODES)
+        dd.addOption(m.id, m.label);
+      dd.setValue(this.plugin.settings.defaultMode).onChange(async (value) => {
+        this.plugin.settings.defaultMode = value;
         await this.plugin.saveSettings();
-        this.plugin.refreshViews();
-      })
-    );
+      });
+    });
     new import_obsidian.Setting(el).setName("Pushes warning threshold").setDesc(
       "The pushes badge turns amber at or above this count \u2014 your procrastination signal. Set higher to only flag chronic avoiders."
     ).addText(
@@ -402,13 +454,29 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         }
       })
     );
-    new import_obsidian.Setting(el).setName("Group Quickies").setDesc(
-      'Collect light-effort tasks into a "Quickies \xB7 3 minutes or less" section at the foot of the list. Effort is still tagged on every task either way \u2014 this only changes what the panel shows.'
+    el.createEl("h3", { text: "Sweep" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text: "A sweep is a timed run through the three-minute tasks: one at a time, with Done / Skip / Takes longer on the keyboard."
+    });
+    new import_obsidian.Setting(el).setName("Offer a sweep in the list").setDesc(
+      `Shows a "you have N quick wins" banner inside the task list when there are at least two. Turn this off if you'd rather only reach Sweep from the mode row.`
     ).addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.groupQuickies).onChange(async (value) => {
-        this.plugin.settings.groupQuickies = value;
+      (toggle) => toggle.setValue(this.plugin.settings.showSweepBanner).onChange(async (value) => {
+        this.plugin.settings.showSweepBanner = value;
         await this.plugin.saveSettings();
         this.plugin.refreshViews();
+      })
+    );
+    new import_obsidian.Setting(el).setName("Seconds per task").setDesc(
+      "The countdown for each task in a sweep. Three minutes is the point of the light-effort tag, so that's the default; going over doesn't stop you, it just turns the clock red."
+    ).addText(
+      (text) => text.setValue(String(this.plugin.settings.sweepSeconds)).onChange(async (value) => {
+        const n = Number(value);
+        if (Number.isFinite(n) && n >= 15) {
+          this.plugin.settings.sweepSeconds = Math.floor(n);
+          await this.plugin.saveSettings();
+        }
       })
     );
     el.createEl("h3", { text: "Categories" });
@@ -838,8 +906,10 @@ function stripPhrase(text, phrase) {
   out = out.replace(/\s{2,}/g, " ").trim();
   return out;
 }
-var EFFORT_RE = /\b(heavy|hard|big|moderate|medium|light|easy|quick|small)\b/i;
+var EFFORT_RE = /\b(deep work|deep|heavy|hard|big|moderate|medium|light|easy|quick|small)\b/i;
 var EFFORT_MAP = {
+  "deep work": "deep",
+  deep: "deep",
   heavy: "heavy",
   hard: "heavy",
   big: "heavy",
@@ -933,7 +1003,7 @@ function buildCaptureBody(app, input) {
 }
 
 // src/view.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/filters.ts
 var URGENT_WINDOW_DAYS = 2;
@@ -957,35 +1027,70 @@ function isUrgent(task, today = startOfToday()) {
 function isImportant(task) {
   return task.important === true;
 }
-function isUnjudged(task) {
-  return task.important === null;
-}
 function quadrantOf(task, today = startOfToday()) {
   return quadrantFor(isUrgent(task, today), isImportant(task));
 }
-function matchesQuadFilter(task, filter, today = startOfToday()) {
+function fitsBudget(task, budget) {
+  if (budget === "any")
+    return true;
+  if (!task.effort)
+    return false;
+  const def = BUDGETS.find((b) => b.id === budget);
+  return !!def && def.fits.includes(task.effort);
+}
+function matchesCategory(task, filter) {
   if (filter === "all")
     return true;
-  const urgent = isUrgent(task, today);
-  const important = isImportant(task);
-  switch (filter) {
-    case "do":
-      return urgent && important;
-    case "schedule":
-      return !urgent && important;
-    case "delegate":
-      return urgent && !important;
-    case "drop":
-      return !urgent && !important && !isUnjudged(task);
-    case "urgent":
-      return urgent;
-    case "important":
-      return important;
-    case "unjudged":
-      return isUnjudged(task);
+  return categoryFor(task.project) === filter;
+}
+function estimateMinutes(tasks) {
+  return tasks.reduce((sum, t) => sum + (t.effort ? EFFORT_MINUTES[t.effort] : 0), 0);
+}
+function formatDuration(minutes) {
+  if (minutes <= 0)
+    return "\u2014";
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0)
+    return `${m}m`;
+  if (m === 0)
+    return `${h}h`;
+  return `${h}h ${m}m`;
+}
+function matchesHorizon(task, horizon, today = startOfToday()) {
+  if (horizon === "done")
+    return task.status === "done";
+  if (task.status !== "open")
+    return false;
+  switch (horizon) {
+    case "today":
+      return !isResting(task, today) && !!task.due && task.due.getTime() <= today.getTime();
+    case "week":
+      return !isResting(task, today) && !!task.due && task.due.getTime() <= addDays(today, 6).getTime();
     default:
       return true;
   }
+}
+function selectTasks(tasks, query, today = startOfToday()) {
+  const needle = query.search.trim().toLowerCase();
+  const out = tasks.filter((t) => {
+    if (!matchesHorizon(t, query.horizon, today))
+      return false;
+    if (!matchesCategory(t, query.category))
+      return false;
+    if (!fitsBudget(t, query.budget))
+      return false;
+    if (needle && !t.title.toLowerCase().includes(needle))
+      return false;
+    return true;
+  });
+  return query.horizon === "done" ? out.sort(compareCompleted) : out.sort((a, b) => compareForToday(a, b, today));
+}
+function groupByQuadrant(tasks, today = startOfToday()) {
+  const out = { do: [], schedule: [], delegate: [], drop: [] };
+  for (const t of tasks)
+    out[quadrantOf(t, today)].push(t);
+  return out;
 }
 function compareForToday(a, b, today = startOfToday()) {
   const rank = (t) => {
@@ -1018,51 +1123,6 @@ function compareCompleted(a, b) {
   if (at !== bt)
     return bt - at;
   return a.title.localeCompare(b.title);
-}
-function bucketFor(tasks, tab, today = startOfToday(), quad = "all") {
-  const scoped = quad === "all" ? tasks : tasks.filter((t) => matchesQuadFilter(t, quad, today));
-  const open = scoped.filter((t) => t.status === "open");
-  const weekEnd = addDays(today, 6);
-  let selected;
-  const tomorrow = addDays(today, 1);
-  switch (tab) {
-    case "today":
-      selected = open.filter(
-        (t) => !isResting(t, today) && !!t.due && t.due.getTime() <= today.getTime()
-      );
-      break;
-    case "tomorrow":
-      selected = open.filter(
-        (t) => !isResting(t, tomorrow) && !!t.due && isSameDay(t.due, tomorrow)
-      );
-      break;
-    case "assigned":
-      selected = scoped.filter((t) => !!t.assigned);
-      break;
-    case "week":
-      selected = open.filter(
-        (t) => !isResting(t, today) && !!t.due && t.due.getTime() <= weekEnd.getTime()
-      );
-      break;
-    case "overdue":
-      selected = open.filter((t) => isOverdue(t, today));
-      break;
-    case "backlog":
-      selected = open.filter(
-        (t) => isResting(t, today) || !t.due || t.due.getTime() > today.getTime()
-      );
-      break;
-    case "completed":
-      selected = scoped.filter((t) => t.status === "done");
-      break;
-    default:
-      selected = open;
-  }
-  selected = tab === "completed" ? selected.sort(compareCompleted) : selected.sort((a, b) => compareForToday(a, b, today));
-  return {
-    tasks: selected,
-    restingCount: open.filter((t) => isResting(t, today)).length
-  };
 }
 
 // src/edit-task-modal.ts
@@ -1330,17 +1390,283 @@ var EditTaskModal = class extends import_obsidian4.Modal {
   }
 };
 
+// src/sweep-modal.ts
+var import_obsidian5 = require("obsidian");
+var NEXT_EFFORT = {
+  light: "moderate",
+  moderate: "heavy",
+  heavy: "deep",
+  deep: null
+};
+var SweepModal = class extends import_obsidian5.Modal {
+  constructor(app, queue, seconds, onFinish) {
+    super(app);
+    this.index = 0;
+    this.outcomes = /* @__PURE__ */ new Map();
+    this.ticker = null;
+    this.queue = queue;
+    this.seconds = seconds;
+    this.remaining = seconds;
+    this.onFinish = onFinish;
+  }
+  onOpen() {
+    this.modalEl.addClass("smart-todo-sweep-modal");
+    const { contentEl } = this;
+    contentEl.empty();
+    this.bodyEl = contentEl.createDiv({ cls: "stw-sweep" });
+    this.scope.register([], " ", (evt) => {
+      evt.preventDefault();
+      void this.resolve("done");
+    });
+    this.scope.register([], "s", () => void this.resolve("skipped"));
+    this.scope.register([], "l", () => void this.resolve("promoted"));
+    this.start();
+    this.paint();
+  }
+  onClose() {
+    this.stop();
+    this.contentEl.empty();
+    this.onFinish();
+  }
+  start() {
+    this.stop();
+    this.remaining = this.seconds;
+    this.ticker = setInterval(() => {
+      this.remaining = Math.max(0, this.remaining - 1);
+      this.paintClock();
+    }, 1e3);
+  }
+  stop() {
+    if (this.ticker)
+      clearInterval(this.ticker);
+    this.ticker = null;
+  }
+  get current() {
+    var _a;
+    return (_a = this.queue[this.index]) != null ? _a : null;
+  }
+  /**
+   * Record an outcome, write it if it has a side effect, and advance.
+   *
+   * "Takes longer" is the one that earns its keystroke: it moves the task up an
+   * effort level, which means next time you ask for three minutes of work this
+   * task correctly isn't offered. A skip changes nothing on disk — skipping is
+   * allowed to be free, or you stop using it and start lying to the timer.
+   */
+  async resolve(outcome) {
+    const task = this.current;
+    if (!task)
+      return;
+    const key = `${task.filePath}:${task.lineNumber}`;
+    if (outcome === "done") {
+      await safeWrite(() => toggleTaskDone(this.app, task, true));
+    } else if (outcome === "promoted") {
+      const next = task.effort ? NEXT_EFFORT[task.effort] : "moderate";
+      if (next)
+        await safeWrite(() => setTaskEffort(this.app, task, next));
+    }
+    this.outcomes.set(key, outcome);
+    this.index++;
+    this.start();
+    this.paint();
+  }
+  paint() {
+    this.bodyEl.empty();
+    const task = this.current;
+    if (!task) {
+      this.stop();
+      this.paintSummary();
+      return;
+    }
+    const head = this.bodyEl.createDiv({ cls: "stw-sweep-head" });
+    const badge = head.createSpan({ cls: "stw-sweep-badge" });
+    (0, import_obsidian5.setIcon)(badge.createSpan({ cls: "stw-sweep-badge-icon" }), "zap");
+    badge.createSpan({
+      text: `Quick win ${this.index + 1} of ${this.queue.length}`
+    });
+    this.bodyEl.createDiv({ cls: "stw-sweep-title", text: task.title || "(untitled task)" });
+    const chips = this.bodyEl.createDiv({ cls: "stw-sweep-chips" });
+    const cat = categoryFor(task.project);
+    if (cat) {
+      const chip = chips.createSpan({ cls: "stw-chip" });
+      chip.createSpan({
+        cls: "stw-dot",
+        attr: { style: `background:${CATEGORY_COLOR[cat]}` }
+      });
+      chip.createSpan({ text: CATEGORY_LABEL[cat] });
+    }
+    if (task.effort) {
+      chips.createSpan({
+        cls: "stw-chip",
+        text: `${EFFORT_MINUTES[task.effort]} min`
+      });
+    }
+    this.paintClock();
+    const actions = this.bodyEl.createDiv({ cls: "stw-sweep-actions" });
+    this.actionBtn(actions, "Done", "Space", "is-primary", () => void this.resolve("done"));
+    this.actionBtn(actions, "Skip", "S", "", () => void this.resolve("skipped"));
+    this.actionBtn(actions, "Takes longer", "L", "", () => void this.resolve("promoted"));
+    const next = task.effort ? NEXT_EFFORT[task.effort] : "moderate";
+    this.bodyEl.createDiv({
+      cls: "stw-sweep-hint",
+      text: next ? `"Takes longer" moves it to the ${next === "deep" ? "deep work" : next === "heavy" ? "1 hour" : "15 minute"} lane and starts the next one.` : `"Takes longer" just moves on \u2014 this is already deep work.`
+    });
+  }
+  /**
+   * Only the clock redraws on each tick. Repainting the whole modal once a
+   * second would steal focus from the buttons and make the title flicker.
+   */
+  paintClock() {
+    let ring = this.bodyEl.querySelector(".stw-sweep-clock");
+    if (!ring) {
+      if (!this.current)
+        return;
+      ring = this.bodyEl.createDiv({ cls: "stw-sweep-clock" });
+      const actions = this.bodyEl.querySelector(".stw-sweep-actions");
+      if (actions)
+        this.bodyEl.insertBefore(ring, actions);
+    }
+    const pct = this.seconds > 0 ? this.remaining / this.seconds : 0;
+    ring.style.setProperty("--sweep-pct", String(Math.max(0, Math.min(1, pct))));
+    ring.toggleClass("is-over", this.remaining === 0);
+    ring.empty();
+    const mm = Math.floor(this.remaining / 60);
+    const ss = String(this.remaining % 60).padStart(2, "0");
+    ring.createDiv({ cls: "stw-sweep-time", text: `${mm}:${ss}` });
+    ring.createDiv({
+      cls: "stw-sweep-of",
+      text: this.remaining === 0 ? "over" : `of ${Math.floor(this.seconds / 60)}:00`
+    });
+  }
+  actionBtn(parent, label, key, cls, onClick) {
+    const btn = parent.createEl("button", { cls: `stw-sweep-btn ${cls}`.trim() });
+    btn.createSpan({ text: label });
+    btn.createSpan({ cls: "stw-sweep-key", text: key });
+    btn.addEventListener("click", onClick);
+  }
+  paintSummary() {
+    const values = [...this.outcomes.values()];
+    const done = values.filter((v) => v === "done").length;
+    const promoted = values.filter((v) => v === "promoted").length;
+    const skipped = values.filter((v) => v === "skipped").length;
+    const cleared = this.queue.filter((t) => this.outcomes.get(`${t.filePath}:${t.lineNumber}`) === "done").reduce((sum, t) => sum + (t.effort ? EFFORT_MINUTES[t.effort] : 0), 0);
+    this.bodyEl.createDiv({ cls: "stw-sweep-title", text: "Sweep complete" });
+    const stats = this.bodyEl.createDiv({ cls: "stw-sweep-stats" });
+    const stat = (n, label) => {
+      const cell = stats.createDiv({ cls: "stw-sweep-stat" });
+      cell.createDiv({ cls: "stw-sweep-stat-n", text: String(n) });
+      cell.createDiv({ cls: "stw-sweep-stat-l", text: label });
+    };
+    stat(done, done === 1 ? "done" : "done");
+    stat(promoted, "resized");
+    stat(skipped, "skipped");
+    this.bodyEl.createDiv({
+      cls: "stw-sweep-hint",
+      text: done > 0 ? `About ${formatDuration(cleared)} of small stuff off the list.` : "Nothing cleared \u2014 the list is unchanged."
+    });
+    const actions = this.bodyEl.createDiv({ cls: "stw-sweep-actions" });
+    this.actionBtn(actions, "Close", "Esc", "is-primary", () => this.close());
+  }
+};
+
+// src/quick-switch.ts
+var import_obsidian6 = require("obsidian");
+var QuickSwitchModal = class extends import_obsidian6.SuggestModal {
+  constructor(app, tasks, onPick) {
+    super(app);
+    this.onPick = onPick;
+    this.setPlaceholder("work, quick, do first, or a task\u2026");
+    this.rows = buildRows(tasks);
+    this.limit = 40;
+  }
+  getSuggestions(query) {
+    const q = query.trim().toLowerCase();
+    if (!q)
+      return this.rows.filter((r) => r.action.kind !== "task").slice(0, 12);
+    const hits = this.rows.filter(
+      (r) => r.title.toLowerCase().includes(q) || r.note.toLowerCase().includes(q) || r.keywords.includes(q)
+    );
+    hits.push({
+      action: { kind: "search", text: query.trim() },
+      title: `Filter the list by "${query.trim()}"`,
+      note: "Search",
+      keywords: ""
+    });
+    return hits;
+  }
+  renderSuggestion(row, el) {
+    el.addClass("stw-qs-row");
+    el.createDiv({ cls: "stw-qs-title", text: row.title });
+    if (row.note)
+      el.createDiv({ cls: "stw-qs-note", text: row.note });
+  }
+  onChooseSuggestion(row) {
+    this.onPick(row.action);
+  }
+};
+function buildRows(tasks) {
+  var _a, _b;
+  const rows = [];
+  for (const m of MODES) {
+    rows.push({
+      action: { kind: "mode", mode: m.id },
+      title: m.label,
+      note: "Mode",
+      keywords: `mode view ${m.label.toLowerCase()}`
+    });
+  }
+  for (const b of BUDGETS) {
+    rows.push({
+      action: { kind: "budget", budget: b.id },
+      title: b.label,
+      note: "I have\u2026",
+      keywords: b.id === "3m" ? "quick quickie quick win small short minutes" : b.id === "any" ? "all everything any" : "time budget minutes hour"
+    });
+  }
+  rows.push({
+    action: { kind: "category", category: "all" },
+    title: "All categories",
+    note: "Category",
+    keywords: "all everything"
+  });
+  for (const c of CATEGORIES) {
+    rows.push({
+      action: { kind: "category", category: c },
+      title: CATEGORY_LABEL[c],
+      note: "Category",
+      keywords: c === "betaworks" ? "work job fund" : c === "personal" ? "life home" : "body"
+    });
+  }
+  for (const h of HORIZONS) {
+    rows.push({
+      action: { kind: "horizon", horizon: h.id },
+      title: h.label,
+      note: "When",
+      keywords: `when horizon ${h.label.toLowerCase()}`
+    });
+  }
+  for (const t of tasks) {
+    rows.push({
+      action: { kind: "task", task: t },
+      title: t.title || "(untitled task)",
+      note: (_a = t.filePath.split("/").pop()) != null ? _a : t.filePath,
+      keywords: ((_b = t.project) != null ? _b : "").toLowerCase()
+    });
+  }
+  return rows;
+}
+
 // src/view.ts
-var SmartTodoView = class extends import_obsidian5.ItemView {
+var SmartTodoView = class extends import_obsidian7.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
-    this.activeTab = "today";
-    this.activeQuad = "all";
-    this.matrixView = false;
+    this.mode = "focus";
+    this.horizon = "today";
+    this.budget = "any";
+    this.category = "all";
+    this.search = "";
     this.tasks = [];
     this.loading = false;
-    this.layout = "card";
-    this.sort = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -1353,349 +1679,471 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
     return "list-checks";
   }
   async onOpen() {
-    this.layout = this.plugin.settings.defaultLayout;
+    this.mode = this.plugin.settings.defaultMode;
     const root = this.containerEl.children[1];
     root.empty();
     root.addClass("smart-todo-root");
-    const header = root.createDiv({ cls: "smart-todo-header" });
-    this.tabBarEl = header.createDiv({ cls: "smart-todo-tabs" });
-    const actions = header.createDiv({ cls: "smart-todo-header-actions" });
-    const matrixBtn = actions.createEl("button", {
-      cls: "smart-todo-matrix-toggle",
-      attr: { "aria-label": "Toggle Eisenhower matrix" }
-    });
-    const paintMatrixBtn = () => {
-      (0, import_obsidian5.setIcon)(matrixBtn, "layout-grid");
-      matrixBtn.toggleClass("is-active", this.matrixView);
-    };
-    paintMatrixBtn();
-    matrixBtn.addEventListener("click", () => {
-      this.matrixView = !this.matrixView;
-      paintMatrixBtn();
-      this.render();
-    });
-    const layoutBtn = actions.createEl("button", {
-      cls: "smart-todo-layout-toggle",
-      attr: { "aria-label": "Toggle card / table layout" }
-    });
-    const paintLayoutBtn = () => (0, import_obsidian5.setIcon)(layoutBtn, this.layout === "table" ? "list" : "table");
-    paintLayoutBtn();
-    layoutBtn.addEventListener("click", () => {
-      this.layout = this.layout === "table" ? "card" : "table";
-      paintLayoutBtn();
-      this.render();
-    });
-    const refreshBtn = actions.createEl("button", {
-      cls: "smart-todo-refresh",
-      attr: { "aria-label": "Rescan vault" }
-    });
-    (0, import_obsidian5.setIcon)(refreshBtn, "refresh-cw");
-    refreshBtn.addEventListener("click", () => void this.refresh());
-    this.quadBarEl = root.createDiv({ cls: "smart-todo-quadbar" });
-    this.renderAddRow(root);
-    this.summaryEl = root.createDiv({ cls: "smart-todo-summary" });
-    this.listEl = root.createDiv({ cls: "smart-todo-list" });
-    this.renderTabs();
-    this.renderQuadFilters();
+    this.applyAccent(root);
+    this.renderTitleBar(root);
+    this.renderSearch(root);
+    this.filtersEl = root.createDiv({ cls: "stw-filters" });
+    this.bodyEl = root.createDiv({ cls: "stw-body" });
+    this.renderFilters();
     await this.refresh();
   }
   async onClose() {
     var _a;
     (_a = this.containerEl.children[1]) == null ? void 0 : _a.empty();
   }
-  /** Rescan the vault, then repaint. */
+  /** Accent lives in CSS custom properties so one setting repaints everything. */
+  applyAccent(root) {
+    var _a;
+    const accent = (_a = ACCENTS[this.plugin.settings.accent]) != null ? _a : ACCENTS.blue;
+    root.style.setProperty("--stw-accent", accent.base);
+    root.style.setProperty("--stw-accent-strong", accent.strong);
+  }
+  /** Repaint from scratch — used when a setting changes shape, not just data. */
+  rebuild() {
+    void this.onOpen();
+  }
   async refresh() {
     this.loading = true;
     this.render();
     this.tasks = await this.plugin.scan();
     this.loading = false;
-    this.renderQuadFilters();
+    this.renderFilters();
     this.render();
   }
-  /**
-   * Capture row. Title only — Enter appends `- [ ] <text>` to the managed file
-   * and the vault-modify event folds it back into the list. Dates and effort
-   * get set afterwards from the row UI, so capture never blocks on metadata.
-   */
-  renderAddRow(root) {
-    const wrap = root.createDiv({ cls: "smart-todo-add" });
-    this.addInputEl = wrap.createEl("input", {
-      cls: "smart-todo-add-input",
-      attr: { type: "text", placeholder: "Add a task\u2026" }
+  // --- Header --------------------------------------------------------------
+  renderTitleBar(root) {
+    const bar = root.createDiv({ cls: "stw-titlebar" });
+    const brand = bar.createDiv({ cls: "stw-brand" });
+    const mark = brand.createSpan({ cls: "stw-mark" });
+    (0, import_obsidian7.setIcon)(mark, "check");
+    brand.createSpan({ cls: "stw-brand-name", text: "Smart ToDo" });
+    bar.createSpan({
+      cls: "stw-date",
+      text: new Date().toLocaleDateString(void 0, {
+        weekday: "short",
+        month: "short",
+        day: "numeric"
+      })
     });
-    const commit = async () => {
-      const value = this.addInputEl.value.trim();
-      if (!value)
-        return;
-      this.addInputEl.disabled = true;
-      const ok = await this.plugin.addTask(value);
-      this.addInputEl.disabled = false;
-      if (ok)
-        this.addInputEl.value = "";
-      this.addInputEl.focus();
-      await this.refresh();
-    };
-    this.addInputEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Enter") {
-        evt.preventDefault();
-        void commit();
-      } else if (evt.key === "Escape") {
-        this.addInputEl.value = "";
-        this.addInputEl.blur();
-      }
+    const refresh = bar.createEl("button", {
+      cls: "stw-icon-btn",
+      attr: { "aria-label": "Rescan vault" }
     });
-    const addBtn = wrap.createEl("button", {
-      cls: "smart-todo-add-btn",
+    (0, import_obsidian7.setIcon)(refresh, "refresh-cw");
+    refresh.addEventListener("click", () => void this.refresh());
+    const add = bar.createEl("button", {
+      cls: "stw-icon-btn is-primary",
       attr: { "aria-label": "Add task" }
     });
-    (0, import_obsidian5.setIcon)(addBtn, "plus");
-    addBtn.addEventListener("click", () => void commit());
-  }
-  renderTabs() {
-    this.tabBarEl.empty();
-    for (const tab of TABS) {
-      const btn = this.tabBarEl.createEl("button", {
-        cls: "smart-todo-tab",
-        text: tab.label
-      });
-      if (tab.id === this.activeTab)
-        btn.addClass("is-active");
-      btn.addEventListener("click", () => {
-        this.activeTab = tab.id;
-        this.renderTabs();
-        void this.refresh();
-      });
-    }
+    (0, import_obsidian7.setIcon)(add, "plus");
+    add.addEventListener("click", () => this.focusCapture());
   }
   /**
-   * The Eisenhower filter row. Each button carries a live count of how many
-   * open tasks in the current tab land in that slice — so the bar doubles as a
-   * matrix review: you can see at a glance that "Urgent & Important" is 9 and
-   * "Needs review" is 40 without clicking anything.
+   * Search box. Typing filters the list live; ⌘K (or clicking the hint) opens
+   * the palette, which can set any filter *or* jump to a task. Both write the
+   * same state, so the chips below always reflect what the box did.
    */
-  renderQuadFilters() {
-    if (!this.quadBarEl)
+  renderSearch(root) {
+    const wrap = root.createDiv({ cls: "stw-search" });
+    const icon = wrap.createSpan({ cls: "stw-search-icon" });
+    (0, import_obsidian7.setIcon)(icon, "search");
+    this.searchInputEl = wrap.createEl("input", {
+      cls: "stw-search-input",
+      attr: { type: "text", placeholder: "work, quick, do first\u2026" }
+    });
+    this.searchInputEl.addEventListener("input", () => {
+      this.search = this.searchInputEl.value;
+      this.renderFilters();
+      this.render();
+    });
+    this.searchInputEl.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape") {
+        this.searchInputEl.value = "";
+        this.search = "";
+        this.searchInputEl.blur();
+        this.renderFilters();
+        this.render();
+      } else if (evt.key === "Enter") {
+        evt.preventDefault();
+        void this.captureFromSearch();
+      } else if (evt.key === "k" && (evt.metaKey || evt.ctrlKey)) {
+        evt.preventDefault();
+        this.openPalette();
+      }
+    });
+    const kbd = wrap.createSpan({ cls: "stw-kbd", text: "\u2318K" });
+    kbd.addEventListener("click", () => this.openPalette());
+  }
+  focusCapture() {
+    this.searchInputEl.focus();
+    this.searchInputEl.select();
+  }
+  /** Enter in the search box with text that matches nothing → create it. */
+  async captureFromSearch() {
+    const value = this.searchInputEl.value.trim();
+    if (!value)
       return;
-    this.quadBarEl.empty();
-    const today = startOfToday();
-    const tabSet = bucketFor(this.tasks, this.activeTab, today, "all").tasks;
-    for (const f of QUAD_FILTERS) {
-      const count = f.id === "all" ? tabSet.length : tabSet.filter((t) => this.quadFilterMatch(t, f.id, today)).length;
-      const btn = this.quadBarEl.createEl("button", {
-        cls: "smart-todo-quad-btn"
-      });
-      btn.createSpan({ cls: "smart-todo-quad-label", text: f.label });
-      btn.createSpan({ cls: "smart-todo-quad-count", text: String(count) });
-      if (f.id === this.activeQuad)
+    if (this.visibleTasks().length > 0)
+      return;
+    const ok = await this.plugin.addTask(value);
+    if (ok) {
+      this.searchInputEl.value = "";
+      this.search = "";
+    }
+    await this.refresh();
+  }
+  /**
+   * Public so a command can open the palette without the panel being focused.
+   * The command is the honest entry point — ⌘K only works while the panel has
+   * focus, and a palette you can only reach from inside the thing it navigates
+   * isn't much of a shortcut.
+   */
+  openPalette() {
+    new QuickSwitchModal(this.app, this.tasks, (action) => this.applyAction(action)).open();
+  }
+  applyAction(action) {
+    switch (action.kind) {
+      case "mode":
+        this.mode = action.mode;
+        break;
+      case "budget":
+        this.budget = action.budget;
+        break;
+      case "category":
+        this.category = action.category;
+        break;
+      case "horizon":
+        this.horizon = action.horizon;
+        break;
+      case "search":
+        this.search = action.text;
+        this.searchInputEl.value = action.text;
+        break;
+      case "task":
+        void this.revealTask(action.task);
+        return;
+    }
+    this.renderFilters();
+    this.render();
+  }
+  // --- Filter rows ---------------------------------------------------------
+  renderFilters() {
+    if (!this.filtersEl)
+      return;
+    this.filtersEl.empty();
+    this.renderModeRow();
+    if (this.mode !== "lanes")
+      this.renderBudgetRow();
+    this.renderCategoryRow();
+  }
+  renderModeRow() {
+    var _a, _b;
+    const row = this.filtersEl.createDiv({ cls: "stw-row stw-modes" });
+    for (const m of MODES) {
+      const btn = row.createEl("button", { cls: "stw-mode" });
+      const ic = btn.createSpan({ cls: "stw-mode-icon" });
+      (0, import_obsidian7.setIcon)(ic, m.icon);
+      btn.createSpan({ cls: "stw-mode-label", text: m.label });
+      btn.createSpan({ cls: "stw-mode-count", text: String(this.countForMode(m.id)) });
+      if (m.id === this.mode)
         btn.addClass("is-active");
-      if (count === 0 && f.id !== "all")
+      btn.addEventListener("click", () => {
+        this.mode = m.id;
+        this.renderFilters();
+        this.render();
+      });
+    }
+    const when = row.createEl("button", { cls: "stw-when" });
+    when.createSpan({
+      text: (_b = (_a = HORIZONS.find((h) => h.id === this.horizon)) == null ? void 0 : _a.label) != null ? _b : "Today"
+    });
+    (0, import_obsidian7.setIcon)(when.createSpan({ cls: "stw-when-caret" }), "chevron-down");
+    when.addEventListener("click", (evt) => {
+      const menu = new import_obsidian7.Menu();
+      for (const h of HORIZONS) {
+        menu.addItem(
+          (item) => item.setTitle(h.label).setChecked(this.horizon === h.id).onClick(() => {
+            this.horizon = h.id;
+            this.renderFilters();
+            void this.refresh();
+          })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
+  }
+  /**
+   * "I have…" — the budget row. Counts are live, so the row doubles as an
+   * answer before you click: *10 things fit in three minutes* is itself the
+   * useful fact.
+   */
+  renderBudgetRow() {
+    const wrap = this.filtersEl.createDiv({ cls: "stw-budget-wrap" });
+    wrap.createDiv({ cls: "stw-row-label", text: "I have\u2026" });
+    const row = wrap.createDiv({ cls: "stw-row stw-budgets" });
+    for (const b of BUDGETS) {
+      const count = this.tasks.filter(
+        (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category) && fitsBudget(t, b.id)
+      ).length;
+      const btn = row.createEl("button", { cls: "stw-budget" });
+      btn.createSpan({ cls: "stw-budget-label", text: b.label });
+      btn.createSpan({ cls: "stw-budget-count", text: String(count) });
+      if (b.id === this.budget)
+        btn.addClass("is-active");
+      if (count === 0)
         btn.addClass("is-empty");
       btn.addEventListener("click", () => {
-        this.activeQuad = f.id;
-        this.renderQuadFilters();
+        this.budget = b.id;
+        this.renderFilters();
         this.render();
       });
     }
   }
-  /** Thin wrapper so the view doesn't re-import the predicate guts. */
-  quadFilterMatch(task, id, today) {
-    const urgent = isUrgent(task, today);
-    const important = task.important === true;
-    const unjudged = isUnjudged(task);
-    switch (id) {
-      case "do":
-        return urgent && important;
-      case "schedule":
-        return !urgent && important;
-      case "delegate":
-        return urgent && !important;
-      case "drop":
-        return !urgent && !important && !unjudged;
-      case "urgent":
-        return urgent;
-      case "important":
-        return important;
-      case "unjudged":
-        return unjudged;
-      default:
-        return true;
+  renderCategoryRow() {
+    const row = this.filtersEl.createDiv({ cls: "stw-row stw-cats" });
+    const chips = [
+      { id: "all", label: "All" },
+      ...CATEGORIES.map((c) => ({ id: c, label: CATEGORY_LABEL[c] }))
+    ];
+    for (const c of chips) {
+      const btn = row.createEl("button", { cls: "stw-cat", text: c.label });
+      if (c.id === this.category)
+        btn.addClass("is-active");
+      if (c.id !== "all") {
+        btn.style.setProperty("--cat-color", CATEGORY_COLOR[c.id]);
+        btn.addClass("has-color");
+      }
+      btn.addEventListener("click", () => {
+        this.category = c.id;
+        this.renderFilters();
+        this.render();
+      });
     }
   }
+  // --- Selection -----------------------------------------------------------
+  get query() {
+    return {
+      horizon: this.horizon,
+      // Sweep is the budget made literal: whatever the budget says fits, this
+      // is the run-through of it. Lanes show every size side by side.
+      budget: this.mode === "lanes" ? "any" : this.budget,
+      category: this.category,
+      search: this.search
+    };
+  }
+  visibleTasks() {
+    return selectTasks(this.tasks, this.query);
+  }
+  /** The number on each mode button — what that mode would show right now. */
+  countForMode(mode) {
+    const base = this.tasks.filter(
+      (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category)
+    );
+    if (mode === "lanes") {
+      return new Set(base.filter((t) => t.effort).map((t) => t.effort)).size;
+    }
+    if (mode === "sweep")
+      return base.filter((t) => fitsBudget(t, "3m")).length;
+    return base.filter((t) => fitsBudget(t, this.budget)).length;
+  }
+  // --- Body ----------------------------------------------------------------
   render() {
-    if (!this.listEl)
+    if (!this.bodyEl)
       return;
     const today = startOfToday();
-    this.listEl.empty();
-    this.summaryEl.empty();
+    this.bodyEl.empty();
     if (this.loading && this.tasks.length === 0) {
-      this.summaryEl.setText("Scanning\u2026");
+      this.bodyEl.createDiv({ cls: "stw-empty", text: "Scanning\u2026" });
       return;
     }
-    const quad = this.matrixView ? "all" : this.activeQuad;
-    const { tasks, restingCount } = bucketFor(
-      this.tasks,
-      this.activeTab,
-      today,
-      quad
-    );
-    const countLabel = `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`;
-    this.summaryEl.createSpan({ cls: "smart-todo-count", text: countLabel });
-    if (!this.matrixView && this.activeQuad !== "all") {
-      const def = QUAD_FILTERS.find((f) => f.id === this.activeQuad);
-      if (def) {
-        this.summaryEl.createSpan({
-          cls: "smart-todo-filter-tag",
-          text: `\xB7 ${def.label}`
-        });
-      }
-    }
-    if (this.activeTab === "today" || this.activeTab === "week") {
-      if (restingCount > 0) {
-        this.summaryEl.createSpan({
-          cls: "smart-todo-resting",
-          text: `${restingCount} ${restingCount === 1 ? "task" : "tasks"} resting in the backlog.`
-        });
-      }
-    }
+    const tasks = this.visibleTasks();
     if (tasks.length === 0) {
-      const empty = this.listEl.createDiv({
-        cls: "smart-todo-empty",
-        text: this.activeTab === "completed" ? "Nothing completed yet." : "Nothing here. Clear."
+      this.renderEmpty();
+      return;
+    }
+    if (this.mode === "lanes")
+      this.renderLanes(tasks, today);
+    else if (this.mode === "sweep")
+      this.renderSweep(tasks, today);
+    else
+      this.renderFocus(tasks, today);
+  }
+  renderEmpty() {
+    const empty = this.bodyEl.createDiv({ cls: "stw-empty" });
+    if (this.tasks.length === 0) {
+      empty.createDiv({ cls: "stw-empty-head", text: "No tasks in scope." });
+      empty.createDiv({
+        cls: "stw-empty-note",
+        text: `Watching ${describeScope(this.plugin.scope)}`
       });
-      if (this.tasks.length === 0) {
+      return;
+    }
+    if (this.search.trim()) {
+      empty.createDiv({ cls: "stw-empty-head", text: `Nothing matches "${this.search.trim()}".` });
+      empty.createDiv({ cls: "stw-empty-note", text: "Press Enter to add it as a task." });
+      return;
+    }
+    if (this.budget !== "any") {
+      const untagged = this.tasks.filter(
+        (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category) && !t.effort
+      ).length;
+      empty.createDiv({ cls: "stw-empty-head", text: "Nothing fits that window." });
+      if (untagged > 0) {
         empty.createDiv({
-          cls: "smart-todo-empty-scope",
-          text: `Watching ${describeScope(this.plugin.scope)}`
+          cls: "stw-empty-note",
+          text: `${untagged} task${untagged === 1 ? " has" : "s have"} no effort set, so ${untagged === 1 ? "it isn't" : "they aren't"} offered here.`
+        });
+        const btn = empty.createEl("button", { cls: "stw-btn", text: "Show anything" });
+        btn.addEventListener("click", () => {
+          this.budget = "any";
+          this.renderFilters();
+          this.render();
         });
       }
       return;
     }
-    const ordered = this.applySort(tasks, today);
-    if (this.matrixView) {
-      this.renderMatrix(this.listEl, ordered, today);
-    } else if (this.layout === "table") {
-      this.renderTable(this.listEl, ordered, today);
-    } else if (this.quickiesGrouped()) {
-      this.renderGroupedCards(this.listEl, ordered, today);
-    } else {
-      for (const task of ordered) {
-        this.renderRow(this.listEl, task, today);
+    empty.createDiv({ cls: "stw-empty-head", text: "Nothing here. Clear." });
+  }
+  /**
+   * Focus: one list, sectioned by Eisenhower quadrant, with a count and a time
+   * estimate on each header. The quick-wins banner sits after the first
+   * section — close enough to the top to be a real offer, far enough down that
+   * the important work is still what you read first.
+   */
+  renderFocus(tasks, today) {
+    const grouped = groupByQuadrant(tasks, today);
+    const quickies = tasks.filter((t) => t.effort === "light");
+    let bannerPlaced = false;
+    for (const q of QUADRANT_ORDER) {
+      const group = grouped[q];
+      if (group.length === 0)
+        continue;
+      const def = QUADRANTS.find((d) => d.id === q);
+      const head = this.bodyEl.createDiv({ cls: `stw-group-head is-${q}` });
+      head.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
+      head.createSpan({ cls: "stw-group-title", text: def.label });
+      const minutes = estimateMinutes(group);
+      head.createSpan({
+        cls: "stw-group-tally",
+        text: minutes > 0 ? `${group.length} \xB7 ${formatDuration(minutes)}` : String(group.length)
+      });
+      head.setAttr("aria-label", def.advice);
+      for (const task of group)
+        this.renderRow(this.bodyEl, task, today);
+      if (!bannerPlaced && this.plugin.settings.showSweepBanner && quickies.length >= 2 && group.length > 0) {
+        this.renderSweepBanner(quickies);
+        bannerPlaced = true;
       }
     }
   }
   /**
-   * Card list with light-effort tasks pulled out into their own section at the
-   * foot: "Quickies · 3 minutes or less".
-   *
-   * The real work and the five-things-you-can-knock-off-now are different
-   * decisions, and interleaving them meant the quick ones padded the list and
-   * made Today look worse than it was. Separating them also gives the batch a
-   * name — "do the quickies" is a thing you can actually act on.
+   * The quick-wins banner. This is the element that most changes behaviour:
+   * it names the pile of small stuff as a single batch with a duration and a
+   * button, which is the difference between "41 open tasks" and "ten minutes".
    */
-  renderGroupedCards(parent, tasks, today) {
-    const quickies = tasks.filter((t) => t.effort === "light");
-    const rest = tasks.filter((t) => t.effort !== "light");
-    for (const task of rest)
-      this.renderRow(parent, task, today);
-    if (quickies.length === 0)
-      return;
-    if (rest.length > 0) {
-      const head = parent.createDiv({ cls: "smart-todo-group-head" });
-      head.createSpan({ cls: "smart-todo-group-title", text: QUICKIE_HEADING });
-      head.createSpan({
-        cls: "smart-todo-group-tally",
-        text: String(quickies.length)
-      });
+  renderSweepBanner(quickies) {
+    const banner = this.bodyEl.createDiv({ cls: "stw-sweep-banner" });
+    const icon = banner.createSpan({ cls: "stw-sweep-banner-icon" });
+    (0, import_obsidian7.setIcon)(icon, "zap");
+    const text = banner.createDiv({ cls: "stw-sweep-banner-text" });
+    text.createDiv({
+      cls: "stw-sweep-banner-head",
+      text: `${quickies.length} quick win${quickies.length === 1 ? "" : "s"}`
+    });
+    text.createDiv({
+      cls: "stw-sweep-banner-sub",
+      text: `about ${formatDuration(estimateMinutes(quickies))}`
+    });
+    const btn = banner.createEl("button", { cls: "stw-sweep-banner-btn", text: "Sweep" });
+    btn.addEventListener("click", () => this.startSweep(quickies));
+  }
+  /** Sweep mode: the queue, previewed, with one button that starts the clock. */
+  renderSweep(tasks, today) {
+    const queue = tasks.filter((t) => t.effort === "light");
+    const head = this.bodyEl.createDiv({ cls: "stw-sweep-intro" });
+    head.createDiv({
+      cls: "stw-sweep-intro-head",
+      text: queue.length === 0 ? "Nothing under 3 minutes." : "Everything under 3 minutes"
+    });
+    head.createDiv({
+      cls: "stw-sweep-intro-sub",
+      text: queue.length === 0 ? "Tag a task's effort as 3 min and it shows up here." : `${queue.length} task${queue.length === 1 ? "" : "s"} \xB7 about ${formatDuration(
+        estimateMinutes(queue)
+      )}`
+    });
+    if (queue.length > 0) {
+      const btn = head.createEl("button", { cls: "stw-btn is-primary", text: "Start sweep" });
+      btn.addEventListener("click", () => this.startSweep(queue));
     }
-    const body = parent.createDiv({ cls: "smart-todo-group-body" });
-    for (const task of quickies)
-      this.renderRow(body, task, today);
+    for (const task of queue)
+      this.renderRow(this.bodyEl, task, today);
+  }
+  startSweep(queue) {
+    new SweepModal(
+      this.app,
+      queue,
+      this.plugin.settings.sweepSeconds,
+      () => void this.refresh()
+    ).open();
   }
   /**
-   * The 2×2 Eisenhower grid: four quadrant cells, each holding the compact
-   * rows that fall in it. Urgent on the left column, Important on the top row,
-   * so Q1 (Do) sits top-left where the eye lands first.
+   * Start a sweep over whatever is currently in scope, for the command palette.
+   *
+   * Deliberately built from `visibleTasks()` rather than the whole vault: if
+   * you've narrowed to Betaworks, a sweep you start from the keyboard should
+   * be the Betaworks quick wins, not every loose end you own.
    */
-  renderMatrix(parent, tasks, today) {
-    const grid = parent.createDiv({ cls: "smart-todo-matrix" });
-    const byQuad = {
-      do: [],
-      schedule: [],
-      delegate: [],
-      drop: []
-    };
-    for (const t of tasks)
-      byQuad[quadrantOf(t, today)].push(t);
-    const order = ["do", "schedule", "delegate", "drop"];
-    for (const q of order) {
-      const def = QUADRANTS.find((d) => d.id === q);
-      const cell = grid.createDiv({ cls: `smart-todo-quad-cell is-${q}` });
-      cell.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
-      const head = cell.createDiv({ cls: "smart-todo-quad-head" });
-      head.createSpan({ cls: "smart-todo-quad-title", text: def.label });
-      head.createSpan({
-        cls: "smart-todo-quad-advice",
-        text: def.advice
+  sweepNow() {
+    const queue = this.visibleTasks().filter((t) => t.effort === "light");
+    if (queue.length === 0)
+      return false;
+    this.startSweep(queue);
+    return true;
+  }
+  /**
+   * Lanes: the kanban-by-size view from the mockups. In a narrow sidebar the
+   * columns become stacked sections with a sticky header; in a wide leaf they
+   * sit side by side. Same DOM either way — it's a CSS decision, not a mode.
+   */
+  renderLanes(tasks, today) {
+    const lanes = this.bodyEl.createDiv({ cls: "stw-lanes" });
+    for (const effort of EFFORTS) {
+      const group = tasks.filter((t) => t.effort === effort);
+      const lane2 = lanes.createDiv({ cls: `stw-lane is-${effort}` });
+      const head2 = lane2.createDiv({ cls: "stw-lane-head" });
+      head2.createSpan({ cls: "stw-lane-title", text: EFFORT_LABEL[effort] });
+      head2.createSpan({
+        cls: "stw-lane-tally",
+        text: group.length === 0 ? "\u2014" : `${group.length} \xB7 ${formatDuration(group.length * EFFORT_MINUTES[effort])}`
       });
-      head.createSpan({
-        cls: "smart-todo-quad-tally",
-        text: String(byQuad[q].length)
-      });
-      const body = cell.createDiv({ cls: "smart-todo-quad-body" });
-      if (byQuad[q].length === 0) {
-        body.createDiv({ cls: "smart-todo-quad-empty", text: "\u2014" });
+      head2.createDiv({ cls: "stw-lane-blurb", text: EFFORT_BLURB[effort] });
+      const body2 = lane2.createDiv({ cls: "stw-lane-body" });
+      if (group.length === 0) {
+        body2.createDiv({ cls: "stw-lane-empty", text: "Empty" });
         continue;
       }
-      for (const task of byQuad[q]) {
-        this.renderRow(body, task, today);
-      }
+      for (const task of group)
+        this.renderRow(body2, task, today);
     }
+    const untagged = tasks.filter((t) => !t.effort);
+    if (untagged.length === 0)
+      return;
+    const lane = lanes.createDiv({ cls: "stw-lane is-untagged" });
+    const head = lane.createDiv({ cls: "stw-lane-head" });
+    head.createSpan({ cls: "stw-lane-title", text: "Unsized" });
+    head.createSpan({ cls: "stw-lane-tally", text: String(untagged.length) });
+    head.createDiv({ cls: "stw-lane-blurb", text: "No effort set \u2014 hidden from budgets" });
+    const body = lane.createDiv({ cls: "stw-lane-body" });
+    for (const task of untagged)
+      this.renderRow(body, task, today);
   }
-  /**
-   * In table layout the user drives the sort via column headers. In card layout
-   * (or table with no explicit sort chosen) we keep the smart triage order the
-   * bucket already produced.
-   */
-  applySort(tasks, today) {
-    if (this.layout !== "table" || !this.sort)
-      return tasks;
-    const { key, dir } = this.sort;
-    const mul = dir === "asc" ? 1 : -1;
-    const quadRank = {
-      do: 0,
-      schedule: 1,
-      delegate: 2,
-      drop: 3
-    };
-    const val = (t) => {
-      var _a;
-      switch (key) {
-        case "due":
-          return t.due ? t.due.getTime() : Number.POSITIVE_INFINITY;
-        case "pushes":
-          return t.pushes;
-        case "effort":
-          return t.effort ? EFFORT_WEIGHT[t.effort] : 0;
-        case "project":
-          return ((_a = t.project) != null ? _a : "").toLowerCase();
-        case "quadrant":
-          return quadRank[quadrantOf(t, today)];
-        default:
-          return t.title.toLowerCase();
-      }
-    };
-    return [...tasks].sort((a, b) => {
-      const av = val(a);
-      const bv = val(b);
-      if (av < bv)
-        return -1 * mul;
-      if (av > bv)
-        return 1 * mul;
-      return 0;
-    });
-  }
+  // --- Row -----------------------------------------------------------------
   renderRow(parent, task, today) {
-    const row = parent.createDiv({ cls: "smart-todo-row" });
+    const row = parent.createDiv({ cls: "stw-row-task" });
     if (task.status === "done")
       row.addClass("is-done");
     if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
@@ -1704,94 +2152,83 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
     if (isResting(task, today))
       row.addClass("is-resting");
     const checkbox = row.createEl("input", {
-      cls: "smart-todo-checkbox",
+      cls: "stw-check",
       attr: { type: "checkbox" }
     });
     checkbox.checked = task.status === "done";
     checkbox.addEventListener("click", async (evt) => {
       evt.stopPropagation();
       checkbox.disabled = true;
-      const ok = await safeWrite(
-        () => toggleTaskDone(this.app, task, task.status === "open")
-      );
+      const ok = await safeWrite(() => toggleTaskDone(this.app, task, task.status === "open"));
       if (!ok)
         checkbox.checked = task.status === "done";
       await this.refresh();
     });
-    const main = row.createDiv({ cls: "smart-todo-main" });
-    const titleRow = main.createDiv({ cls: "smart-todo-title-row" });
-    this.renderImportanceToggle(titleRow, task);
-    const titleEl = titleRow.createDiv({
-      cls: "smart-todo-title",
+    const main = row.createDiv({ cls: "stw-task-main" });
+    const titleEl = main.createDiv({
+      cls: "stw-task-title",
       text: task.title || "(untitled task)"
     });
     titleEl.addEventListener("click", () => this.openEditor(task));
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
-    const meta = main.createDiv({ cls: "smart-todo-meta" });
-    if (task.status === "open") {
-      const q = quadrantOf(task, today);
-      const def = QUADRANTS.find((d) => d.id === q);
-      const qpill = meta.createSpan({
-        cls: `smart-todo-quadpill is-${q}`,
-        text: def.label,
-        attr: { "aria-label": `${def.label} \u2014 ${def.advice}` }
-      });
-      qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
-      if (isUnjudged(task))
-        qpill.addClass("is-unjudged");
-    }
-    if (task.due) {
-      meta.createSpan({
-        cls: "smart-todo-date",
-        text: this.humanDate(task.due, today)
-      });
-    }
-    if (isResting(task, today)) {
-      meta.createSpan({
-        cls: "smart-todo-date is-defer",
-        text: `rests until ${this.humanDate(task.defer, today)}`
-      });
-    }
-    if (task.effort === "light" && !this.quickiesGrouped()) {
+    const meta = main.createDiv({ cls: "stw-task-meta" });
+    this.renderCategoryChip(meta, task);
+    if (task.effort) {
       const pill = meta.createSpan({
-        cls: "smart-todo-effort is-light",
-        text: EFFORT_LABEL.light,
-        attr: { "aria-label": "3 minutes or less" }
+        cls: `stw-effort is-${task.effort}`,
+        attr: { "aria-label": "Click to change" }
       });
-      const openMenu = (evt) => {
+      if (task.effort === "light")
+        (0, import_obsidian7.setIcon)(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
+      pill.createSpan({ text: EFFORT_LABEL[task.effort] });
+      const open = (evt) => {
         evt.preventDefault();
         evt.stopPropagation();
         this.showEffortMenu(evt, task);
       };
-      pill.addEventListener("click", openMenu);
-      pill.addEventListener("contextmenu", openMenu);
+      pill.addEventListener("click", open);
+      pill.addEventListener("contextmenu", open);
+    } else {
+      const pill = meta.createSpan({ cls: "stw-effort is-unset", text: "+ size" });
+      pill.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.showEffortMenu(evt, task);
+      });
+    }
+    if (task.due) {
+      meta.createSpan({ cls: "stw-date", text: this.humanDate(task.due, today) });
+    }
+    if (isResting(task, today)) {
+      meta.createSpan({
+        cls: "stw-date is-defer",
+        text: `rests until ${this.humanDate(task.defer, today)}`
+      });
     }
     if (task.pushes > 0) {
       const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
       meta.createSpan({
-        cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
+        cls: `stw-pushes${warn ? " is-warn" : ""}`,
         text: `\u21BB ${task.pushes}`,
         attr: {
           "aria-label": `Pushed ${task.pushes} ${task.pushes === 1 ? "time" : "times"}`
         }
       });
     }
-    this.renderCategory(meta, task);
     if (task.assigned) {
-      meta.createSpan({ cls: "smart-todo-assigned", text: `@${task.assigned}` });
+      meta.createSpan({ cls: "stw-assigned", text: `@${task.assigned}` });
     }
     if (task.status === "done" && task.doneDate) {
-      meta.createSpan({
-        cls: "smart-todo-date",
-        text: `done ${formatDate(task.doneDate)}`
-      });
+      meta.createSpan({ cls: "stw-date", text: `done ${formatDate(task.doneDate)}` });
     }
+    const actions = row.createDiv({ cls: "stw-task-actions" });
+    this.renderImportanceToggle(actions, task);
     if (task.status === "open") {
-      const pushBtn = row.createEl("button", {
-        cls: "smart-todo-push",
+      const pushBtn = actions.createEl("button", {
+        cls: "stw-icon-btn is-ghost",
         attr: { "aria-label": "Push 1 day" }
       });
-      (0, import_obsidian5.setIcon)(pushBtn, "chevrons-right");
+      (0, import_obsidian7.setIcon)(pushBtn, "chevrons-right");
       pushBtn.addEventListener("click", async (evt) => {
         evt.stopPropagation();
         pushBtn.disabled = true;
@@ -1801,42 +2238,36 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
     }
   }
   /**
-   * Importance star. Three states cycle on click:
+   * Importance. Three states cycle on click:
    *   unjudged (?) → important (★) → not important (☆) → unjudged
-   * Right-click clears straight back to unjudged. This is the one control that
-   * sets the "important" axis; urgency is never set by hand.
+   * Right-click clears to unjudged. This is the only control that sets the
+   * "important" axis; urgency is always derived from the due date.
    */
   renderImportanceToggle(parent, task) {
     const state = task.important === true ? "yes" : task.important === false ? "no" : "unjudged";
     const star = parent.createSpan({
-      cls: `smart-todo-star is-${state}`,
+      cls: `stw-star is-${state}`,
       attr: {
         "aria-label": state === "yes" ? "Important \u2014 click to mark not important" : state === "no" ? "Not important \u2014 click to clear" : "Importance not set \u2014 click to mark important"
       }
     });
-    (0, import_obsidian5.setIcon)(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
-    const cycle = async () => {
-      const next = task.important === null ? true : task.important === true ? false : null;
-      await safeWrite(() => setTaskImportant(this.app, task, next));
-      await this.refresh();
-    };
+    (0, import_obsidian7.setIcon)(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
     star.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      void cycle();
+      const next = task.important === null ? true : task.important === true ? false : null;
+      void safeWrite(() => setTaskImportant(this.app, task, next)).then(() => this.refresh());
     });
     star.addEventListener("contextmenu", (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
-      void safeWrite(() => setTaskImportant(this.app, task, null)).then(
-        () => this.refresh()
-      );
+      void safeWrite(() => setTaskImportant(this.app, task, null)).then(() => this.refresh());
     });
   }
   showEffortMenu(evt, task) {
-    const menu = new import_obsidian5.Menu();
+    const menu = new import_obsidian7.Menu();
     for (const effort of EFFORTS) {
       menu.addItem(
-        (item) => item.setTitle(effort.charAt(0).toUpperCase() + effort.slice(1)).setChecked(task.effort === effort).onClick(async () => {
+        (item) => item.setTitle(EFFORT_LABEL[effort]).setChecked(task.effort === effort).onClick(async () => {
           await safeWrite(() => setTaskEffort(this.app, task, effort));
           await this.refresh();
         })
@@ -1844,45 +2275,33 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
     }
     menu.addSeparator();
     menu.addItem(
-      (item) => item.setTitle("Clear effort").onClick(async () => {
+      (item) => item.setTitle("Clear size").onClick(async () => {
         await safeWrite(() => setTaskEffort(this.app, task, null));
         await this.refresh();
       })
     );
     menu.showAtMouseEvent(evt);
   }
-  /**
-   * Category chip: a colored dot + name, or a faint "+ Category" affordance
-   * when unset. Click opens a three-item menu — Betaworks / Personal / Health
-   * — because the whole point of collapsing eleven free-text projects into
-   * three categories is that picking one should never need typing.
-   *
-   * A legacy, un-migrated value still renders under its own hashed color so
-   * it's visibly *not* one of the three until it's folded.
-   */
-  renderCategory(parent, task) {
-    const chip = parent.createSpan({ cls: "smart-todo-project" });
+  renderCategoryChip(parent, task) {
+    const chip = parent.createSpan({ cls: "stw-cat-chip" });
     const canonical = asCategory(task.project);
     if (canonical) {
       chip.createSpan({
-        cls: "smart-todo-project-dot",
+        cls: "stw-dot",
         attr: { style: `background:${CATEGORY_COLOR[canonical]}` }
       });
-      chip.createSpan({
-        cls: "smart-todo-project-name",
-        text: CATEGORY_LABEL[canonical]
-      });
+      chip.createSpan({ text: CATEGORY_LABEL[canonical] });
     } else if (task.project) {
       chip.addClass("is-legacy");
       chip.createSpan({
-        cls: "smart-todo-project-dot",
+        cls: "stw-dot",
         attr: { style: `background:${projectColor(task.project)}` }
       });
-      chip.createSpan({ cls: "smart-todo-project-name", text: task.project });
+      chip.createSpan({ text: task.project });
       chip.setAttr("aria-label", "Not one of the three categories \u2014 click to set");
     } else {
       chip.addClass("is-unset");
-      chip.setText("+ Category");
+      chip.setText("+ category");
     }
     chip.addEventListener("click", (evt) => {
       evt.preventDefault();
@@ -1892,7 +2311,7 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
   }
   showCategoryMenu(evt, task) {
     const current = asCategory(task.project);
-    const menu = new import_obsidian5.Menu();
+    const menu = new import_obsidian7.Menu();
     for (const cat of CATEGORIES) {
       menu.addItem(
         (item) => item.setTitle(CATEGORY_LABEL[cat]).setChecked(current === cat).onClick(async () => {
@@ -1910,7 +2329,6 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
     );
     menu.showAtMouseEvent(evt);
   }
-  /** Open the full editor for a task and write back whatever changed. */
   openEditor(task) {
     new EditTaskModal(
       this.app,
@@ -1924,126 +2342,11 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
       () => void this.revealTask(task)
     ).open();
   }
-  /** Is the Quickies section active for the current layout? */
-  quickiesGrouped() {
-    return this.plugin.settings.groupQuickies && this.layout === "card" && !this.matrixView;
-  }
-  /** Onda-style table: sortable headers + one row per task. */
-  renderTable(parent, tasks, today) {
-    var _a;
-    const table = parent.createEl("table", { cls: "smart-todo-table" });
-    const thead = table.createEl("thead");
-    const headRow = thead.createEl("tr");
-    const cols = [
-      { key: "title", label: "Task" },
-      { key: "quadrant", label: "Priority" },
-      { key: "due", label: "Due" },
-      { key: "pushes", label: "Pushes" },
-      { key: "effort", label: "Effort" },
-      { key: "project", label: "Project" }
-    ];
-    for (const col of cols) {
-      const th = headRow.createEl("th", { cls: "smart-todo-th", text: col.label });
-      if (((_a = this.sort) == null ? void 0 : _a.key) === col.key) {
-        th.addClass("is-sorted");
-        th.createSpan({
-          cls: "smart-todo-sort-caret",
-          text: this.sort.dir === "asc" ? " \u25B2" : " \u25BC"
-        });
-      }
-      th.addEventListener("click", () => {
-        var _a2;
-        if (((_a2 = this.sort) == null ? void 0 : _a2.key) === col.key) {
-          this.sort = {
-            key: col.key,
-            dir: this.sort.dir === "asc" ? "desc" : "asc"
-          };
-        } else {
-          this.sort = { key: col.key, dir: "asc" };
-        }
-        this.render();
-      });
-    }
-    const tbody = table.createEl("tbody");
-    for (const task of tasks) {
-      const tr = tbody.createEl("tr", { cls: "smart-todo-trow" });
-      if (task.status === "done")
-        tr.addClass("is-done");
-      if (task.due && task.due.getTime() < today.getTime() && task.status === "open") {
-        tr.addClass("is-overdue");
-      }
-      const titleTd = tr.createEl("td", { cls: "smart-todo-td-title" });
-      const cb = titleTd.createEl("input", {
-        attr: { type: "checkbox" },
-        cls: "smart-todo-checkbox"
-      });
-      cb.checked = task.status === "done";
-      cb.addEventListener("click", async (evt) => {
-        evt.stopPropagation();
-        cb.disabled = true;
-        await safeWrite(
-          () => toggleTaskDone(this.app, task, task.status === "open")
-        );
-        await this.refresh();
-      });
-      const titleSpan = titleTd.createSpan({
-        cls: "smart-todo-title",
-        text: task.title || "(untitled task)"
-      });
-      titleSpan.addEventListener("click", () => this.openEditor(task));
-      const quadTd = tr.createEl("td", { cls: "smart-todo-td-quadrant" });
-      this.renderImportanceToggle(quadTd, task);
-      if (task.status === "open") {
-        const q = quadrantOf(task, today);
-        const def = QUADRANTS.find((d) => d.id === q);
-        const qpill = quadTd.createSpan({
-          cls: `smart-todo-quadpill is-${q}`,
-          text: def.label,
-          attr: { "aria-label": def.advice }
-        });
-        qpill.style.setProperty("--quad-color", QUADRANT_COLOR[q]);
-        if (isUnjudged(task))
-          qpill.addClass("is-unjudged");
-      } else {
-        quadTd.createSpan({ cls: "smart-todo-quad-na", text: "\u2014" });
-      }
-      const dueTd = tr.createEl("td", { cls: "smart-todo-td-due" });
-      dueTd.setText(task.due ? this.humanDate(task.due, today) : "\u2014");
-      const pushTd = tr.createEl("td", { cls: "smart-todo-td-pushes" });
-      if (task.pushes > 0) {
-        const warn = task.pushes >= this.plugin.settings.pushesWarnThreshold;
-        pushTd.createSpan({
-          cls: `smart-todo-pushes${warn ? " is-warn" : ""}`,
-          text: String(task.pushes)
-        });
-      } else {
-        pushTd.setText("\u2014");
-      }
-      const effTd = tr.createEl("td", { cls: "smart-todo-td-effort" });
-      if (task.effort === "light") {
-        const effPill = effTd.createSpan({
-          cls: "smart-todo-effort is-light",
-          text: EFFORT_LABEL.light
-        });
-        effPill.addEventListener("click", (evt) => {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.showEffortMenu(evt, task);
-        });
-      } else {
-        effTd.setText("\u2014");
-      }
-      const projTd = tr.createEl("td", { cls: "smart-todo-td-project" });
-      this.renderCategory(projTd, task);
-    }
-  }
-  /** Open the source note and park the cursor on the task's line. */
   async revealTask(task) {
     const leaf = this.app.workspace.getLeaf(false);
-    await leaf.openFile(
-      this.app.vault.getAbstractFileByPath(task.filePath),
-      { eState: { line: task.lineNumber } }
-    );
+    await leaf.openFile(this.app.vault.getAbstractFileByPath(task.filePath), {
+      eState: { line: task.lineNumber }
+    });
   }
   humanDate(date, today) {
     if (!date)
@@ -2057,15 +2360,14 @@ var SmartTodoView = class extends import_obsidian5.ItemView {
     const days = Math.round((date.getTime() - today.getTime()) / 864e5);
     if (days < 0)
       return `${formatDate(date)} (${Math.abs(days)}d late)`;
-    if (days <= 6) {
+    if (days <= 6)
       return date.toLocaleDateString(void 0, { weekday: "short" });
-    }
     return formatDate(date);
   }
 };
 
 // src/categorize.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 function planCategoryMigration(tasks) {
   var _a;
   const changes = [];
@@ -2095,7 +2397,7 @@ function groupPlan(changes) {
     froms: Array.from(byTarget.get(cat).entries()).map(([from, count]) => ({ from, count })).sort((a, b) => b.count - a.count || a.from.localeCompare(b.from))
   }));
 }
-var CategoryMigrationModal = class extends import_obsidian6.Modal {
+var CategoryMigrationModal = class extends import_obsidian8.Modal {
   constructor(app, changes, onApply) {
     super(app);
     this.changes = changes;
@@ -2158,7 +2460,7 @@ var CategoryMigrationModal = class extends import_obsidian6.Modal {
 
 // src/main.ts
 var REFRESH_DEBOUNCE_MS = 250;
-var SmartTodoPlugin = class extends import_obsidian7.Plugin {
+var SmartTodoPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -2192,6 +2494,24 @@ var SmartTodoPlugin = class extends import_obsidian7.Plugin {
       callback: () => this.refreshViews()
     });
     this.addCommand({
+      id: "quick-switch",
+      name: "Quick switch (filters and tasks)",
+      callback: () => {
+        void this.withView((view) => view.openPalette());
+      }
+    });
+    this.addCommand({
+      id: "start-sweep",
+      name: "Start a sweep of the 3-minute tasks",
+      callback: () => {
+        void this.withView((view) => {
+          if (!view.sweepNow()) {
+            new import_obsidian9.Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4e3);
+          }
+        });
+      }
+    });
+    this.addCommand({
       id: "migrate-categories",
       name: "Fold projects into categories (Betaworks / Personal / Health)",
       callback: () => void this.openCategoryMigration()
@@ -2201,7 +2521,7 @@ var SmartTodoPlugin = class extends import_obsidian7.Plugin {
     });
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian7.TFile && this.isInManagedScope(file.path)) {
+        if (file instanceof import_obsidian9.TFile && this.isInManagedScope(file.path)) {
           this.scheduleRefresh();
         }
       })
@@ -2245,7 +2565,7 @@ var SmartTodoPlugin = class extends import_obsidian7.Plugin {
       return;
     try {
       await ensureManagedFile(this.app, path);
-      new import_obsidian7.Notice(`Smart ToDo: created ${path}`, 4e3);
+      new import_obsidian9.Notice(`Smart ToDo: created ${path}`, 4e3);
     } catch (e) {
       console.error("[smart-todo] could not create managed file", path, e);
     }
@@ -2287,7 +2607,7 @@ var SmartTodoPlugin = class extends import_obsidian7.Plugin {
           break;
         applied++;
       }
-      new import_obsidian7.Notice(
+      new import_obsidian9.Notice(
         `Smart ToDo: retagged ${applied} of ${changes.length} task${changes.length === 1 ? "" : "s"}.`,
         5e3
       );
@@ -2308,6 +2628,32 @@ var SmartTodoPlugin = class extends import_obsidian7.Plugin {
       if (view instanceof SmartTodoView)
         void view.refresh();
     }
+  }
+  /**
+   * Full teardown and redraw, for changes a refresh can't carry: the accent
+   * writes CSS custom properties onto the root element at build time, and the
+   * mode row's labels are baked into the DOM.
+   */
+  rebuildViews() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SMART_TODO)) {
+      const view = leaf.view;
+      if (view instanceof SmartTodoView)
+        view.rebuild();
+    }
+  }
+  /**
+   * Run an action against the panel, opening it first if it's closed.
+   *
+   * Palette and Sweep are both commands, and a command that quietly does
+   * nothing because the sidebar happens to be shut is the worst outcome — so
+   * these take a beat to reveal the leaf rather than failing silently.
+   */
+  async withView(fn) {
+    await this.activateView();
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_SMART_TODO)[0];
+    if (!leaf || !(leaf.view instanceof SmartTodoView))
+      return;
+    fn(leaf.view);
   }
   async activateView() {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_SMART_TODO);

@@ -8,12 +8,13 @@
 
 export type TaskStatus = "open" | "done";
 
-export type Effort = "light" | "moderate" | "heavy";
+export type Effort = "light" | "moderate" | "heavy" | "deep";
 
-export const EFFORTS: Effort[] = ["light", "moderate", "heavy"];
+export const EFFORTS: Effort[] = ["light", "moderate", "heavy", "deep"];
 
 /** Heavier work sorts first inside a due-date group — hard things decay fastest. */
 export const EFFORT_WEIGHT: Record<Effort, number> = {
+  deep: 4,
   heavy: 3,
   moderate: 2,
   light: 1,
@@ -26,12 +27,101 @@ export const EFFORT_WEIGHT: Record<Effort, number> = {
  * already knew. Moderate/Heavy still sort and still show in the editor.
  */
 export const EFFORT_LABEL: Record<Effort, string> = {
-  light: "Quickie",
-  moderate: "Moderate",
-  heavy: "Heavy",
+  light: "3 min",
+  moderate: "15 min",
+  heavy: "1 hour",
+  deep: "Deep work",
+};
+
+/**
+ * Nominal minutes per effort level.
+ *
+ * These are the *ceiling* of each bucket, not an estimate of the individual
+ * task, and that's deliberate: the number exists to answer "can I clear this
+ * group before my next meeting", and a budget you can beat is more useful than
+ * one you can miss. Summed totals are always labelled "about".
+ */
+export const EFFORT_MINUTES: Record<Effort, number> = {
+  light: 3,
+  moderate: 15,
+  heavy: 60,
+  deep: 120,
+};
+
+/** Sub-label shown under a lane header — what this size of task actually is. */
+export const EFFORT_BLURB: Record<Effort, string> = {
+  light: "Clear them in one sitting",
+  moderate: "Between meetings",
+  heavy: "Needs a block",
+  deep: "More than an hour",
 };
 
 export const QUICKIE_HEADING = "Quickies · 3 minutes or less";
+
+// --- Time budget ---------------------------------------------------------
+//
+// The pivot that unlocked the UI. Effort was a *label* on a task; a budget is
+// a *question the panel asks you* — "how much time do you actually have right
+// now?" — and everything that doesn't fit the answer disappears. That turns
+// the third axis from another thing to configure into a single tap.
+//
+// Budgets are cumulative: picking 15 min shows the 3-minute tasks too, because
+// a fifteen-minute window is a fine place to clear three quickies.
+
+export type Budget = "3m" | "15m" | "1h" | "any";
+
+export interface BudgetDef {
+  id: Budget;
+  label: string;
+  /** Effort levels that fit inside this budget. */
+  fits: Effort[];
+}
+
+export const BUDGETS: BudgetDef[] = [
+  { id: "3m", label: "3 min", fits: ["light"] },
+  { id: "15m", label: "15 min", fits: ["light", "moderate"] },
+  { id: "1h", label: "1 hour", fits: ["light", "moderate", "heavy"] },
+  { id: "any", label: "Any", fits: ["light", "moderate", "heavy", "deep"] },
+];
+
+// --- View modes ----------------------------------------------------------
+//
+// 0.7.0 had seven "when" tabs × eight quadrant buttons × a matrix toggle × a
+// layout toggle. Every one was reachable and the combination was unreadable.
+// Three modes replace all of it, because the mockups made the real structure
+// obvious: the three axes are not three views, they're three different *kinds*
+// of control. Category and budget are FILTERS (they narrow one list); the
+// Eisenhower quadrant is the GROUPING (it's how that list is sectioned).
+//
+//   Focus — one list, filtered by budget + category, grouped by quadrant
+//   Sweep — only what fits the budget, as a timed run-through
+//   Lanes — the same set split into effort columns
+//
+// "When" survives as a single horizon control rather than seven tabs.
+
+export type ViewMode = "focus" | "sweep" | "lanes";
+
+export interface ModeDef {
+  id: ViewMode;
+  label: string;
+  icon: string;
+}
+
+export const MODES: ModeDef[] = [
+  { id: "focus", label: "Focus", icon: "sun" },
+  { id: "sweep", label: "Sweep", icon: "zap" },
+  { id: "lanes", label: "Lanes", icon: "columns-3" },
+];
+
+/** The "when" axis, collapsed from seven tabs into one menu. */
+export type Horizon = "today" | "week" | "all" | "done";
+
+export const HORIZONS: Array<{ id: Horizon; label: string }> = [
+  { id: "today", label: "Today" },
+  { id: "week", label: "This week" },
+  { id: "all", label: "Everything" },
+  { id: "done", label: "Done" },
+];
 
 export interface SmartTask {
   /** Vault-relative path of the file the line lives in. */
@@ -79,11 +169,14 @@ export interface QuadrantDef {
 
 /** Q1 do, Q2 schedule, Q3 delegate, Q4 drop. */
 export const QUADRANTS: QuadrantDef[] = [
-  { id: "do", urgent: true, important: true, label: "Do", advice: "Do now" },
-  { id: "schedule", urgent: false, important: true, label: "Schedule", advice: "Decide when" },
-  { id: "delegate", urgent: true, important: false, label: "Delegate", advice: "Delegate / quick-win" },
-  { id: "drop", urgent: false, important: false, label: "Drop", advice: "Drop or defer" },
+  { id: "do", urgent: true, important: true, label: "Do first", advice: "Urgent and important" },
+  { id: "schedule", urgent: false, important: true, label: "Schedule", advice: "Important, not urgent" },
+  { id: "delegate", urgent: true, important: false, label: "Delegate", advice: "Urgent, not important" },
+  { id: "drop", urgent: false, important: false, label: "Drop", advice: "Neither — let it go" },
 ];
+
+/** Section order in Focus mode: the Eisenhower reading order, top to bottom. */
+export const QUADRANT_ORDER: Quadrant[] = ["do", "schedule", "delegate", "drop"];
 
 export function quadrantFor(urgent: boolean, important: boolean): Quadrant {
   if (urgent && important) return "do";
@@ -92,12 +185,43 @@ export function quadrantFor(urgent: boolean, important: boolean): Quadrant {
   return "drop";
 }
 
-/** HSL accent per quadrant, for the colored pill in the row. */
+/**
+ * HSL accent per quadrant, for the colored pill and the section rule.
+ *
+ * Tuned to OmniFocus's own vocabulary so the panel reads as the same family as
+ * the list it replaces: overdue red, flagged orange, deferred indigo, and a
+ * plain grey for the pile you've stopped caring about.
+ */
 export const QUADRANT_COLOR: Record<Quadrant, string> = {
-  do: "hsl(4, 72%, 54%)", // red — fire
-  schedule: "hsl(210, 68%, 54%)", // blue — plan
-  delegate: "hsl(38, 82%, 52%)", // amber — hand off
+  do: "hsl(3, 72%, 56%)", // OmniFocus overdue red — fire
+  schedule: "hsl(240, 18%, 51%)", // #6B6B99 — plan
+  delegate: "hsl(36, 100%, 48%)", // OmniFocus flag orange — hand off
   drop: "hsl(220, 9%, 55%)", // grey — let go
+};
+
+// --- Accent --------------------------------------------------------------
+//
+// The green was a first guess at "distinctive". The default is now the
+// OmniFocus indigo (#6B6B99) — it's the palette the real list has lived in for
+// years, it's muted enough to sit under headings without shouting, and it
+// stays clear of the red/amber the matrix already spends on urgency. The
+// choice is a setting, not a hardcode, because it's exactly the kind of thing
+// that gets second-guessed.
+
+export type Accent = "omnifocus" | "blue" | "green" | "slate";
+
+/** [base, hover/strong] — written to CSS custom properties on the root. */
+export const ACCENTS: Record<Accent, { label: string; base: string; strong: string }> = {
+  // #6B6B99 — John's OmniFocus title indigo, converted to HSL so the strong
+  // variant is a pure lightness step rather than a second eyeballed hex.
+  omnifocus: {
+    label: "OmniFocus indigo",
+    base: "hsl(240, 18%, 51%)",
+    strong: "hsl(240, 22%, 38%)",
+  },
+  blue: { label: "Blue", base: "hsl(214, 72%, 42%)", strong: "hsl(214, 78%, 32%)" },
+  green: { label: "Forest green", base: "hsl(149, 61%, 20%)", strong: "hsl(149, 61%, 14%)" },
+  slate: { label: "Slate", base: "hsl(215, 25%, 35%)", strong: "hsl(215, 28%, 25%)" },
 };
 
 // --- Managed scope -------------------------------------------------------
@@ -139,6 +263,18 @@ export interface SmartTodoSettings {
    * task; this is purely about what the panel shows.
    */
   groupQuickies: boolean;
+  /** Panel accent color. */
+  accent: Accent;
+  /** Which mode the panel opens in. */
+  defaultMode: ViewMode;
+  /** Seconds on the Sweep timer per task. */
+  sweepSeconds: number;
+  /**
+   * Show the "N quick wins · about Xm — Sweep" banner inside the Focus list.
+   * It's the single highest-value element from the mockups: it makes the pile
+   * of small stuff a *batch with a button* instead of noise between real work.
+   */
+  showSweepBanner: boolean;
 }
 
 export type Layout = "card" | "table";
@@ -151,6 +287,10 @@ export const DEFAULT_SETTINGS: SmartTodoSettings = {
   pushesWarnThreshold: 3,
   defaultLayout: "card",
   groupQuickies: true,
+  accent: "omnifocus",
+  defaultMode: "focus",
+  sweepSeconds: 180,
+  showSweepBanner: true,
 };
 
 // --- Categories ----------------------------------------------------------
@@ -164,6 +304,9 @@ export const DEFAULT_SETTINGS: SmartTodoSettings = {
 export type Category = "betaworks" | "personal" | "health";
 
 export const CATEGORIES: Category[] = ["betaworks", "personal", "health"];
+
+/** The category filter row: the three categories plus "everything". */
+export type CategoryFilter = Category | "all";
 
 export const CATEGORY_LABEL: Record<Category, string> = {
   betaworks: "Betaworks",

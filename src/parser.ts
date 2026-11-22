@@ -91,7 +91,7 @@ export function isSameDay(a: Date, b: Date): boolean {
 
 function normalizeEffort(value: string): Effort | null {
   const v = value.trim().toLowerCase();
-  if (v === "light" || v === "moderate" || v === "heavy") return v;
+  if (v === "light" || v === "moderate" || v === "heavy" || v === "deep") return v;
   return null;
 }
 

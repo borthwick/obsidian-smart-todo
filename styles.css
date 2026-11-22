@@ -1,728 +1,990 @@
-/* Smart ToDo — restrained, Obsidian-native. All color comes from theme vars
-   so it tracks light/dark and custom themes instead of fighting them. */
+/* Smart ToDo 0.8 — one sidebar, three modes.
+ *
+ * Colour comes from theme vars wherever a theme has an opinion, so the panel
+ * tracks light/dark and custom themes instead of fighting them. The one
+ * exception is the accent: it's set from settings as --stw-accent on the root
+ * element, because the whole point of it is to be *this* plugin's colour and
+ * not whatever the vault's interactive accent happens to be.
+ *
+ * Layout rule for the whole file: this lives in a 260–400px sidebar. Nothing
+ * may rely on horizontal room. Every row wraps, every count is tabular, and
+ * nothing is wider than its container.
+ */
 
 .smart-todo-root {
+  /* Overridden inline from ACCENTS[settings.accent]; these are the blue
+     defaults so the panel still looks right if the inline set ever fails. */
+  --stw-accent: hsl(214, 72%, 42%);
+  --stw-accent-strong: hsl(214, 78%, 32%);
+
   padding: 0 var(--size-4-2) var(--size-4-4);
   font-size: var(--font-ui-small);
 }
 
-/* ---------- header / tabs ---------- */
+/* ======================================================================
+   Title bar
+   ====================================================================== */
 
-.smart-todo-header {
+.stw-titlebar {
   display: flex;
   align-items: center;
-  gap: var(--size-4-2);
+  gap: var(--size-2-2);
   position: sticky;
   top: 0;
+  z-index: 3;
+  padding: var(--size-4-2) 0 var(--size-2-3);
+  background: var(--background-secondary);
+}
+
+.stw-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  min-width: 0;
+}
+
+/* The mark is the only solid block of accent in the panel. Everything else
+   uses it as a line or a tint, which keeps a saturated blue from shouting. */
+.stw-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-s);
+  background: var(--stw-accent);
+  color: #fff;
+  flex: 0 0 auto;
+}
+.stw-mark .svg-icon {
+  width: 12px;
+  height: 12px;
+  stroke-width: 3;
+}
+
+/* OmniFocus puts its list title in the indigo and leaves the rows plain. Same
+   here: the accent marks *what you're looking at*, never the tasks themselves. */
+.stw-brand-name {
+  font-weight: var(--font-semibold);
+  color: var(--stw-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stw-titlebar .stw-date {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.stw-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  box-shadow: none;
+}
+.stw-icon-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.stw-icon-btn .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+.stw-icon-btn.is-primary {
+  background: var(--stw-accent);
+  color: #fff;
+}
+.stw-icon-btn.is-primary:hover {
+  background: var(--stw-accent-strong);
+  color: #fff;
+}
+.stw-icon-btn.is-ghost {
+  opacity: 0;
+  color: var(--text-faint);
+}
+.stw-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ======================================================================
+   Search / ⌘K
+   ====================================================================== */
+
+.stw-search {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: 0 var(--size-2-3);
+  margin-bottom: var(--size-2-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+}
+.stw-search:focus-within {
+  border-color: var(--stw-accent);
+  box-shadow: 0 0 0 1px var(--stw-accent);
+}
+.stw-search-icon {
+  display: inline-flex;
+  color: var(--text-faint);
+  flex: 0 0 auto;
+}
+.stw-search-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+.stw-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--size-2-2) 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+.stw-search-input:focus {
+  box-shadow: none;
+  outline: none;
+}
+
+/* The keyboard hint is also the button — the mockup showed the shortcut, and
+   a visible shortcut that isn't clickable is a small lie on a trackpad. */
+.stw-kbd {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-family: var(--font-interface);
+  font-size: 10px;
+  color: var(--text-faint);
+  cursor: pointer;
+  user-select: none;
+}
+.stw-kbd:hover {
+  color: var(--text-normal);
+  border-color: var(--text-faint);
+}
+
+/* ======================================================================
+   Filters — mode, when, budget, category
+   ====================================================================== */
+
+.stw-filters {
+  position: sticky;
+  top: 40px;
   z-index: 2;
-  padding: var(--size-4-2) 0;
+  padding-bottom: var(--size-2-3);
   background: var(--background-secondary);
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.smart-todo-tabs {
+.stw-row {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--size-2-1);
-  flex: 1;
-  min-width: 0;
 }
 
-.smart-todo-tab {
-  padding: 2px var(--size-4-2);
+.stw-row-label {
+  margin: var(--size-2-3) 0 var(--size-2-1);
   font-size: var(--font-ui-smaller);
-  color: var(--text-muted);
-  background: transparent;
+  color: var(--text-faint);
+}
+
+/* --- Modes: the only segmented control in the panel ------------------- */
+
+.stw-modes {
+  gap: 0;
+  padding: 2px;
+  border-radius: var(--radius-m);
+  background: var(--background-modifier-hover);
+}
+
+.stw-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
+  padding: var(--size-2-2);
   border: none;
   border-radius: var(--radius-s);
+  background: transparent;
   box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
   cursor: pointer;
+}
+.stw-mode:hover {
+  color: var(--text-normal);
+}
+.stw-mode.is-active {
+  background: var(--background-primary);
+  color: var(--stw-accent);
+  font-weight: var(--font-semibold);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.stw-mode-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.stw-mode-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+.stw-mode-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.smart-todo-tab:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
-
-.smart-todo-tab.is-active {
-  color: var(--text-normal);
-  background: var(--background-modifier-active-hover);
-  font-weight: var(--font-semibold);
-}
-
-.smart-todo-refresh {
-  display: flex;
-  align-items: center;
-  padding: 2px;
+.stw-mode-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
   color: var(--text-faint);
-  background: transparent;
-  border: none;
+}
+.stw-mode.is-active .stw-mode-count {
+  color: var(--stw-accent);
+}
+
+/* --- "When": a menu, not a tab strip --------------------------------- */
+
+.stw-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--size-2-3);
+  padding: var(--size-2-1) var(--size-2-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
   box-shadow: none;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
   cursor: pointer;
 }
-
-.smart-todo-refresh:hover {
+.stw-when:hover {
   color: var(--text-normal);
+  border-color: var(--text-faint);
 }
-
-.smart-todo-refresh .svg-icon {
-  width: 14px;
-  height: 14px;
-}
-
-/* ---------- summary ---------- */
-
-.smart-todo-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--size-4-2);
-  padding: var(--size-4-2) var(--size-2-1);
+.stw-when-caret {
+  display: inline-flex;
   color: var(--text-faint);
+}
+.stw-when-caret .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* --- Budget chips: "I have… 3 min / 15 min / 1 hour / Any" ------------ */
+
+.stw-budget-wrap {
+  margin-top: var(--size-2-1);
+}
+
+.stw-budget {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: var(--size-2-2) var(--size-2-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: none;
   font-size: var(--font-ui-smaller);
-}
-
-.smart-todo-count {
   color: var(--text-muted);
+  cursor: pointer;
+}
+.stw-budget:hover {
+  color: var(--text-normal);
+  border-color: var(--text-faint);
+}
+.stw-budget.is-active {
+  border-color: var(--stw-accent);
+  background: var(--stw-accent);
+  color: #fff;
+  font-weight: var(--font-semibold);
+}
+/* A chip with nothing behind it stays clickable but stops advertising. */
+.stw-budget.is-empty {
+  opacity: 0.45;
+}
+.stw-budget.is-empty.is-active {
+  opacity: 1;
+}
+.stw-budget-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.stw-budget.is-active .stw-budget-count {
+  color: rgba(255, 255, 255, 0.75);
 }
 
-.smart-todo-resting {
-  font-style: italic;
+/* --- Category chips -------------------------------------------------- */
+
+.stw-cats {
+  margin-top: var(--size-2-3);
 }
 
-/* ---------- rows ---------- */
-
-.smart-todo-list {
-  display: flex;
-  flex-direction: column;
+.stw-cat {
+  padding: var(--size-2-1) var(--size-2-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  cursor: pointer;
 }
-
-.smart-todo-row {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--size-4-2);
-  padding: var(--size-4-2) var(--size-2-1);
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.smart-todo-row:hover {
+.stw-cat:hover {
+  color: var(--text-normal);
   background: var(--background-modifier-hover);
 }
+.stw-cat.is-active {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+  background: var(--background-modifier-hover);
+}
+/* Category colour appears as a left rule rather than a dot: in a chip this
+   narrow a dot reads as a bullet and steals the first character's space. */
+.stw-cat.has-color.is-active {
+  box-shadow: inset 2px 0 0 var(--cat-color);
+}
 
-.smart-todo-checkbox {
-  margin: 1px 0 0;
+/* ======================================================================
+   Body — Focus groups and task rows
+   ====================================================================== */
+
+.stw-body {
+  padding-top: var(--size-2-3);
+}
+
+/* A quadrant heading, not a quadrant box. The 2x2 grid was the thing that
+   never fit a sidebar; stacked sections in priority order say the same thing
+   and leave the full width for task titles. */
+.stw-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-2-2);
+  margin: var(--size-4-3) 0 var(--size-2-2);
+  padding-left: var(--size-2-3);
+  border-left: 3px solid var(--quad-color, var(--stw-accent));
+}
+.stw-group-head:first-child {
+  margin-top: var(--size-2-2);
+}
+.stw-group-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--quad-color, var(--text-normal));
+}
+.stw-group-tally {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+/* "Drop" is deliberately quiet — it's the pile you're meant to stop looking
+   at, so it shouldn't compete with the work above it. */
+.stw-group-head.is-drop {
+  opacity: 0.65;
+}
+
+/* --- Task row -------------------------------------------------------- */
+
+.stw-row-task {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) var(--size-2-2) var(--size-2-2) var(--size-2-3);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+.stw-row-task:hover {
+  background: var(--background-modifier-hover);
+}
+.stw-row-task:hover .stw-icon-btn.is-ghost {
+  opacity: 1;
+}
+.stw-row-task.is-done {
+  opacity: 0.55;
+}
+.stw-row-task.is-done .stw-task-title {
+  text-decoration: line-through;
+}
+.stw-row-task.is-resting {
+  opacity: 0.7;
+}
+/* Overdue gets a hairline, not a red row. One red row is a warning; six red
+   rows are wallpaper. */
+.stw-row-task.is-overdue {
+  box-shadow: inset 2px 0 0 var(--text-error);
+}
+
+.stw-check {
+  margin: 2px 0 0;
   flex: 0 0 auto;
   cursor: pointer;
 }
 
-.smart-todo-main {
+.stw-task-main {
   flex: 1;
   min-width: 0;
 }
 
-.smart-todo-title {
+.stw-task-title {
   color: var(--text-normal);
-  line-height: var(--line-height-tight);
-  cursor: pointer;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
-.smart-todo-title:hover {
-  color: var(--text-accent);
-}
-
-.smart-todo-row.is-done .smart-todo-title {
-  color: var(--text-faint);
-  text-decoration: line-through;
-}
-
-.smart-todo-row.is-resting {
-  opacity: 0.7;
-}
-
-.smart-todo-meta {
+.stw-task-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--size-2-2);
   margin-top: 3px;
   font-size: var(--font-ui-smaller);
-}
-
-.smart-todo-date {
   color: var(--text-faint);
 }
 
-.smart-todo-date.is-defer {
+/* Effort reads as a duration, because that's the question the budget chips
+   ask. "+ size" is the same control in its empty state — a missing estimate
+   is the one bit of metadata the panel actively asks you to fill in. */
+.stw-effort {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--size-2-2);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.stw-effort.is-light {
+  background: color-mix(in srgb, var(--stw-accent) 14%, transparent);
+  color: var(--stw-accent);
+}
+.stw-effort.is-deep {
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+}
+.stw-effort.is-unset {
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border);
+  color: var(--text-faint);
+}
+.stw-effort.is-unset:hover {
+  color: var(--text-normal);
+  border-color: var(--text-faint);
+}
+.stw-effort-bolt {
+  display: inline-flex;
+}
+.stw-effort-bolt .svg-icon {
+  width: 10px;
+  height: 10px;
+}
+
+.stw-date {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.stw-date.is-defer {
   font-style: italic;
 }
 
-.smart-todo-row.is-overdue .smart-todo-date {
-  color: var(--text-error);
-}
-
-/* ---------- effort pills ---------- */
-
-.smart-todo-effort {
-  padding: 0 6px;
-  border-radius: var(--radius-s);
-  border: 1px solid transparent;
-  font-size: var(--font-ui-smaller);
-  line-height: 1.5;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-/* unset = faint dashed placeholder, inviting a click to set effort */
-.smart-todo-effort.is-unset {
-  color: var(--text-faint);
-  border: 1px dashed var(--background-modifier-border);
-  background: transparent;
-  opacity: 0.8;
-}
-.smart-todo-effort.is-unset:hover {
-  color: var(--text-muted);
-  opacity: 1;
-}
-
-/* light = neutral, deliberately quiet */
-.smart-todo-effort.is-light {
-  color: var(--text-muted);
-  background: var(--background-modifier-border);
-}
-
-/* moderate = green outline */
-.smart-todo-effort.is-moderate {
-  color: var(--color-green);
-  border-color: var(--color-green);
-  background: transparent;
-}
-
-/* heavy = orange, the only loud thing in the list */
-.smart-todo-effort.is-heavy {
-  color: var(--color-orange);
-  border-color: var(--color-orange);
-  background: hsla(var(--color-orange-hsl), 0.1);
-  font-weight: var(--font-semibold);
-}
-
-/* ---------- pushes badge ---------- */
-
-.smart-todo-pushes {
-  padding: 0 5px;
-  border-radius: var(--radius-s);
-  color: var(--text-muted);
-  background: var(--background-modifier-border);
-  font-size: var(--font-ui-smaller);
+.stw-pushes {
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
-
-/* amber chip once a task has been pushed past the threshold — the Onda signal */
-.smart-todo-pushes.is-warn {
-  color: var(--color-orange);
-  background: hsla(var(--color-orange-hsl), 0.15);
+.stw-pushes.is-warn {
+  color: var(--text-warning);
   font-weight: var(--font-semibold);
 }
 
-/* ---------- project / assignee ---------- */
+.stw-assigned {
+  color: var(--text-muted);
+}
 
-.smart-todo-project {
+.stw-cat-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--text-accent);
-  cursor: pointer;
+  white-space: nowrap;
 }
-
-.smart-todo-project.is-unset {
-  color: var(--text-faint);
-  opacity: 0.8;
+.stw-cat-chip.is-legacy {
+  font-style: italic;
 }
-.smart-todo-project.is-unset:hover {
-  color: var(--text-muted);
-  opacity: 1;
+.stw-cat-chip.is-unset {
+  opacity: 0.55;
 }
-
-.smart-todo-project-dot {
+.stw-dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex: 0 0 auto;
 }
 
-.smart-todo-assigned {
-  color: var(--text-muted);
-}
+/* --- Right-hand gutter: importance + push ---------------------------- */
 
-/* ---------- push button ---------- */
-
-.smart-todo-push {
+.stw-task-actions {
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
-  padding: 2px;
-  color: var(--text-faint);
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 80ms ease-in-out;
-}
-
-.smart-todo-row:hover .smart-todo-push {
-  opacity: 1;
-}
-
-.smart-todo-push:hover {
-  color: var(--text-accent);
-}
-
-.smart-todo-push .svg-icon {
-  width: 14px;
-  height: 14px;
-}
-
-/* Touch devices get no hover — keep the control reachable. */
-@media (hover: none) {
-  .smart-todo-push {
-    opacity: 1;
-  }
-}
-
-/* ---------- empty state ---------- */
-
-.smart-todo-empty {
-  padding: var(--size-4-4) var(--size-2-1);
-  color: var(--text-faint);
-  font-style: italic;
-  text-align: center;
-}
-
-.smart-todo-empty-scope {
-  margin-top: var(--size-2-2);
-  font-size: var(--font-ui-smaller);
-  font-style: normal;
-  color: var(--text-faint);
-  word-break: break-word;
-}
-
-/* ---------- capture row ---------- */
-
-.smart-todo-add {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
-  padding: var(--size-2-3) 0 var(--size-2-2);
-}
-
-.smart-todo-add-input {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--font-ui-small);
-}
-
-.smart-todo-add-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--size-2-1) var(--size-2-2);
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  cursor: pointer;
-}
-
-.smart-todo-add-btn:hover {
-  color: var(--text-normal);
-}
-
-.smart-todo-add-btn .svg-icon {
-  width: 16px;
-  height: 16px;
-}
-
-/* ---------- settings ---------- */
-
-.smart-todo-scope-input {
-  width: 100%;
-  font-family: var(--font-monospace);
-  font-size: var(--font-ui-smaller);
-  resize: vertical;
-}
-
-.smart-todo-scope-summary {
-  margin: var(--size-2-2) 0 var(--size-4-3);
-  padding-left: var(--size-4-2);
-  border-left: 2px solid var(--background-modifier-border);
-}
-
-/* ---------- header actions ---------- */
-
-.smart-todo-header-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
+  gap: 2px;
   flex: 0 0 auto;
 }
 
-.smart-todo-layout-toggle {
-  display: flex;
-  align-items: center;
-  padding: 2px;
-  color: var(--text-faint);
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  cursor: pointer;
-}
-.smart-todo-layout-toggle:hover {
-  color: var(--text-normal);
-}
-.smart-todo-layout-toggle .svg-icon {
-  width: 14px;
-  height: 14px;
-}
-
-/* ---------- table layout ---------- */
-
-.smart-todo-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-ui-small);
-}
-
-.smart-todo-th {
-  text-align: left;
-  padding: var(--size-2-2) var(--size-2-2);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  font-weight: var(--font-semibold);
-  border-bottom: 1px solid var(--background-modifier-border);
-  cursor: pointer;
-  white-space: nowrap;
-  user-select: none;
-}
-.smart-todo-th:hover {
-  color: var(--text-normal);
-}
-.smart-todo-th.is-sorted {
-  color: var(--text-accent);
-}
-.smart-todo-sort-caret {
-  font-size: 0.7em;
-}
-
-.smart-todo-trow {
-  border-bottom: 1px solid var(--background-modifier-border-hover);
-}
-.smart-todo-trow:hover {
-  background: var(--background-modifier-hover);
-}
-.smart-todo-trow.is-done .smart-todo-title {
-  text-decoration: line-through;
-  color: var(--text-faint);
-}
-.smart-todo-trow.is-overdue .smart-todo-td-due {
-  color: var(--color-red);
-}
-
-.smart-todo-table td {
-  padding: var(--size-2-2) var(--size-2-2);
-  vertical-align: middle;
-}
-.smart-todo-td-title {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
-}
-.smart-todo-td-title .smart-todo-title {
-  cursor: pointer;
-}
-.smart-todo-td-due {
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-/* ---------- project picker modal ---------- */
-
-.smart-todo-project-input {
-  width: 100%;
-  margin-bottom: var(--size-4-2);
-}
-.smart-todo-project-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--size-2-2);
-  margin-bottom: var(--size-4-3);
-}
-.smart-todo-project-chip {
+.stw-star {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px var(--size-2-3);
-  font-size: var(--font-ui-smaller);
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-s);
   cursor: pointer;
 }
-.smart-todo-modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--size-2-2);
+.stw-star:hover {
+  background: var(--background-modifier-hover);
+}
+.stw-star .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+.stw-star.is-yes {
+  color: var(--text-accent);
+}
+.stw-star.is-no {
+  color: var(--text-faint);
+  opacity: 0.5;
+}
+/* Unjudged is visible but unalarming — it's a prompt, not an error. */
+.stw-star.is-unjudged {
+  color: var(--text-faint);
+  opacity: 0;
+}
+.stw-row-task:hover .stw-star.is-unjudged {
+  opacity: 0.8;
 }
 
 /* ======================================================================
-   Eisenhower matrix: filter bar, importance star, quadrant pills, grid
+   Buttons / chips shared by panel and modals
    ====================================================================== */
 
-/* ---------- filter button bar (second axis, under the tabs) ---------- */
-
-.smart-todo-quadbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--size-2-1);
-  padding: var(--size-2-2) 0 var(--size-2-3);
-  border-bottom: 1px solid var(--background-modifier-border);
-  margin-bottom: var(--size-2-2);
+.stw-btn {
+  padding: var(--size-2-2) var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  box-shadow: none;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.stw-btn:hover {
+  color: var(--text-normal);
+  border-color: var(--text-faint);
+}
+.stw-btn.is-primary {
+  border-color: var(--stw-accent);
+  background: var(--stw-accent);
+  color: #fff;
+  font-weight: var(--font-semibold);
+}
+.stw-btn.is-primary:hover {
+  background: var(--stw-accent-strong);
+  color: #fff;
 }
 
-.smart-todo-quad-btn {
+.stw-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 2px var(--size-2-3);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  box-shadow: none;
-  cursor: pointer;
-  white-space: nowrap;
 }
 
-.smart-todo-quad-btn:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
+/* ======================================================================
+   Empty states
+   ====================================================================== */
 
-.smart-todo-quad-btn.is-active {
-  color: var(--text-on-accent);
-  background: var(--interactive-accent);
-  border-color: var(--interactive-accent);
-  font-weight: var(--font-semibold);
-}
-
-.smart-todo-quad-btn.is-empty {
-  opacity: 0.45;
-}
-
-.smart-todo-quad-count {
-  min-width: 1.4em;
-  padding: 0 4px;
-  font-size: var(--font-ui-smaller);
-  font-variant-numeric: tabular-nums;
+.stw-empty {
+  padding: var(--size-4-5) var(--size-2-3);
   text-align: center;
   color: var(--text-faint);
-  background: var(--background-modifier-border);
-  border-radius: var(--radius-s);
 }
-
-.smart-todo-quad-btn.is-active .smart-todo-quad-count {
-  color: var(--text-on-accent);
-  background: rgba(255, 255, 255, 0.25);
+.stw-empty-head {
+  color: var(--text-muted);
+  margin-bottom: var(--size-2-2);
 }
-
-.smart-todo-filter-tag {
-  margin-left: var(--size-2-2);
-  color: var(--text-faint);
+.stw-empty-note {
   font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  margin-bottom: var(--size-4-2);
 }
 
-/* ---------- matrix toggle button in the header ---------- */
+/* ======================================================================
+   Sweep — the banner, the preview, the modal
+   ====================================================================== */
 
-.smart-todo-matrix-toggle {
+/* The banner is the single most behaviour-changing element in the panel: it
+   sits *inside* the list, after the first real group, so clearing small stuff
+   is offered where you're already looking rather than hidden behind a tab. */
+.stw-sweep-banner {
   display: flex;
   align-items: center;
-  padding: 2px;
-  color: var(--text-faint);
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  cursor: pointer;
+  gap: var(--size-2-3);
+  margin: var(--size-4-3) 0;
+  padding: var(--size-2-3) var(--size-4-2);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--stw-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--stw-accent) 28%, transparent);
 }
-.smart-todo-matrix-toggle:hover {
-  color: var(--text-normal);
-}
-.smart-todo-matrix-toggle.is-active {
-  color: var(--interactive-accent);
-}
-
-/* ---------- importance star ---------- */
-
-.smart-todo-title-row {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
-}
-
-.smart-todo-star {
+.stw-sweep-banner-icon {
   display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  cursor: pointer;
-  line-height: 0;
+  color: var(--stw-accent);
+  flex: 0 0 auto;
 }
-.smart-todo-star .svg-icon {
+.stw-sweep-banner-icon .svg-icon {
   width: 15px;
   height: 15px;
 }
-.smart-todo-star.is-yes {
-  color: var(--color-yellow);
-}
-.smart-todo-star.is-no {
-  color: var(--text-faint);
-}
-.smart-todo-star.is-unjudged {
-  color: var(--text-muted);
-  opacity: 0.6;
-}
-.smart-todo-star:hover {
-  opacity: 1;
-  color: var(--color-yellow);
-}
-
-/* ---------- quadrant pill (the live classification) ---------- */
-
-.smart-todo-quadpill {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px var(--size-2-2);
-  font-size: var(--font-ui-smaller);
-  font-weight: var(--font-semibold);
-  line-height: 1.5;
-  color: #fff;
-  background: var(--quad-color, var(--text-muted));
-  border-radius: var(--radius-s);
-}
-.smart-todo-quadpill.is-unjudged {
-  opacity: 0.55;
-}
-.smart-todo-quad-na {
-  color: var(--text-faint);
-}
-
-/* ---------- 2x2 matrix grid ---------- */
-
-.smart-todo-matrix {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--size-2-3);
-}
-
-.smart-todo-quad-cell {
-  display: flex;
-  flex-direction: column;
+.stw-sweep-banner-text {
+  flex: 1;
   min-width: 0;
-  border: 1px solid var(--background-modifier-border);
-  border-top: 3px solid var(--quad-color, var(--background-modifier-border));
-  border-radius: var(--radius-s);
-  background: var(--background-secondary);
-  overflow: hidden;
 }
-
-.smart-todo-quad-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--size-2-2);
-  padding: var(--size-2-2) var(--size-2-3);
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-.smart-todo-quad-title {
+.stw-sweep-banner-head {
+  color: var(--text-normal);
   font-weight: var(--font-semibold);
-  color: var(--quad-color, var(--text-normal));
-}
-.smart-todo-quad-advice {
   font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
 }
-.smart-todo-quad-tally {
-  margin-left: auto;
+.stw-sweep-banner-sub {
   font-size: var(--font-ui-smaller);
-  font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
+.stw-sweep-banner-btn {
+  flex: 0 0 auto;
+  padding: var(--size-2-1) var(--size-2-3);
+  border: none;
+  border-radius: var(--radius-s);
+  background: var(--stw-accent);
+  box-shadow: none;
+  color: #fff;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+.stw-sweep-banner-btn:hover {
+  background: var(--stw-accent-strong);
+  color: #fff;
+}
 
-.smart-todo-quad-body {
-  padding: var(--size-2-2);
-  overflow-y: auto;
-}
-.smart-todo-quad-body .smart-todo-row {
-  padding: var(--size-2-1) 0;
-}
-.smart-todo-quad-empty {
-  padding: var(--size-2-3);
-  color: var(--text-faint);
+.stw-sweep-intro {
+  padding: var(--size-4-2) var(--size-2-3) var(--size-4-3);
   text-align: center;
 }
-
-/* Table priority cell */
-.smart-todo-td-quadrant {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
-  white-space: nowrap;
+.stw-sweep-intro-head {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+.stw-sweep-intro-sub {
+  margin: var(--size-2-2) 0 var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 
-/* ===================================================================== */
-/* 0.7.0 — task editor, three categories, Quickies group                 */
-/* ===================================================================== */
+/* --- Sweep modal ----------------------------------------------------- */
 
-/* A legacy project value that hasn't been folded into one of the three
-   categories yet: dashed outline so it reads as "needs a decision", not as a
-   fourth category. */
-.smart-todo-project.is-legacy {
-  border: 1px dashed var(--background-modifier-border);
+.smart-todo-sweep-modal {
+  max-width: 420px;
+}
+
+.stw-sweep {
+  text-align: center;
+  padding: var(--size-4-2) 0;
+}
+.stw-sweep-head {
+  margin-bottom: var(--size-4-3);
+}
+.stw-sweep-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px var(--size-2-3);
   border-radius: var(--radius-s);
-  padding: 0 var(--size-2-2);
-  opacity: 0.85;
-}
-
-/* --- Quickies group -------------------------------------------------- */
-
-.smart-todo-group-head {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
-  margin: var(--size-4-3) 0 var(--size-2-1);
-  padding-top: var(--size-2-2);
-  border-top: 1px solid var(--background-modifier-border);
-}
-.smart-todo-group-title {
+  background: color-mix(in srgb, var(--stw-accent) 12%, transparent);
+  color: var(--stw-accent);
   font-size: var(--font-ui-smaller);
   font-weight: var(--font-semibold);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
 }
-.smart-todo-group-tally {
-  margin-left: auto;
-  font-size: var(--font-ui-smaller);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
+.stw-sweep-badge-icon {
+  display: inline-flex;
 }
-/* Quickies read as a batch, not as peers of the real work. */
-.smart-todo-group-body .smart-todo-row {
-  padding-top: var(--size-2-1);
-  padding-bottom: var(--size-2-1);
-}
-.smart-todo-group-body .smart-todo-title {
-  color: var(--text-muted);
+.stw-sweep-badge-icon .svg-icon {
+  width: 12px;
+  height: 12px;
 }
 
-/* --- Task editor modal ---------------------------------------------- */
+.stw-sweep-title {
+  font-size: var(--font-ui-large);
+  line-height: 1.3;
+  color: var(--text-normal);
+  overflow-wrap: anywhere;
+}
+
+.stw-sweep-chips {
+  display: flex;
+  justify-content: center;
+  gap: var(--size-2-2);
+  margin-top: var(--size-2-3);
+}
+
+/* A conic-gradient ring driven by one custom property, so the per-second
+   repaint only has to set --sweep-pct and never touches layout. */
+.stw-sweep-clock {
+  --sweep-pct: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 104px;
+  height: 104px;
+  margin: var(--size-4-4) auto;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      var(--stw-accent) calc(var(--sweep-pct) * 360deg),
+      var(--background-modifier-border) 0
+    );
+}
+.stw-sweep-clock::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: var(--background-primary);
+}
+.stw-sweep-clock.is-over {
+  background: var(--background-modifier-error);
+}
+.stw-sweep-time {
+  position: relative;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+.stw-sweep-of {
+  position: relative;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+.stw-sweep-clock.is-over .stw-sweep-time,
+.stw-sweep-clock.is-over .stw-sweep-of {
+  color: var(--text-error);
+}
+
+.stw-sweep-actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--size-2-2);
+  margin-top: var(--size-4-2);
+}
+.stw-sweep-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: var(--size-2-3) var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.stw-sweep-btn:hover {
+  color: var(--text-normal);
+  border-color: var(--text-faint);
+}
+.stw-sweep-btn.is-primary {
+  border-color: var(--stw-accent);
+  background: var(--stw-accent);
+  color: #fff;
+  font-weight: var(--font-semibold);
+}
+.stw-sweep-btn.is-primary:hover {
+  background: var(--stw-accent-strong);
+  color: #fff;
+}
+/* The key cap is the point of the button: this screen is meant to be run
+   without the mouse, so every action shows its key. */
+.stw-sweep-key {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--background-modifier-hover);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.stw-sweep-btn.is-primary .stw-sweep-key {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.stw-sweep-hint {
+  margin-top: var(--size-4-3);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.stw-sweep-stats {
+  display: flex;
+  justify-content: center;
+  gap: var(--size-4-5);
+  margin: var(--size-4-4) 0;
+}
+.stw-sweep-stat-n {
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+.stw-sweep-stat-l {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+/* ======================================================================
+   Lanes mode
+   ====================================================================== */
+
+.stw-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding-top: var(--size-2-2);
+}
+
+/* Lanes stack rather than scroll sideways. A kanban in a 300px sidebar is a
+   row of unreadable slivers; stacked lanes keep the same grouping and stay
+   readable, and the effort colour on the left edge does the column's job. */
+.stw-lane {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+}
+.stw-lane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--size-2-2);
+  padding: var(--size-2-3) var(--size-4-2);
+  background: var(--background-modifier-hover);
+  border-left: 3px solid var(--stw-accent);
+}
+.stw-lane.is-light .stw-lane-head {
+  border-left-color: var(--stw-accent);
+}
+.stw-lane.is-moderate .stw-lane-head {
+  border-left-color: color-mix(in srgb, var(--stw-accent) 70%, var(--text-faint));
+}
+.stw-lane.is-heavy .stw-lane-head {
+  border-left-color: color-mix(in srgb, var(--stw-accent) 45%, var(--text-faint));
+}
+.stw-lane.is-deep .stw-lane-head {
+  border-left-color: var(--text-muted);
+}
+.stw-lane.is-untagged .stw-lane-head {
+  border-left-color: var(--background-modifier-border);
+}
+.stw-lane-title {
+  font-weight: var(--font-semibold);
+  color: var(--stw-accent);
+}
+.stw-lane-tally {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+.stw-lane-blurb {
+  flex: 1 0 100%;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+.stw-lane-body {
+  padding: var(--size-2-2) 0;
+}
+.stw-lane-empty {
+  padding: var(--size-2-3) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+.stw-lane.is-untagged {
+  opacity: 0.8;
+}
+
+/* ======================================================================
+   ⌘K palette rows
+   ====================================================================== */
+
+.stw-qs-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+}
+.stw-qs-title {
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stw-qs-note {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+/* ======================================================================
+   Modals that aren't the panel — capture, task editor, category migration
+   ====================================================================== */
+
+.smart-todo-modal-input {
+  width: 100%;
+}
+.smart-todo-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  margin-top: var(--size-4-4);
+}
+.smart-todo-modal-spacer {
+  flex: 1;
+}
 
 .smart-todo-edit-modal {
   max-width: 480px;
@@ -748,10 +1010,21 @@
   line-height: 1.4;
   color: var(--text-faint);
 }
+.smart-todo-edit-reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  font-size: var(--font-ui-smaller);
+}
+.smart-todo-edit-reveal-icon svg {
+  width: 14px;
+  height: 14px;
+}
 
 /* Segmented control: the three categories, the importance call, effort.
    Buttons rather than a dropdown — every option is visible, so setting a
-   field is one click with no hidden state. */
+   field is one click with no hidden state. Four effort levels now, so the
+   row is allowed to wrap. */
 .smart-todo-seg {
   display: flex;
   flex-wrap: wrap;
@@ -771,8 +1044,8 @@
   color: var(--text-normal);
 }
 .smart-todo-seg-btn.is-active {
-  border-color: var(--cat-color, var(--interactive-accent));
-  box-shadow: inset 0 0 0 1px var(--cat-color, var(--interactive-accent));
+  border-color: var(--cat-color, var(--stw-accent));
+  box-shadow: inset 0 0 0 1px var(--cat-color, var(--stw-accent));
   color: var(--text-normal);
   font-weight: var(--font-semibold);
 }
@@ -799,27 +1072,13 @@
   color: var(--text-normal);
 }
 
-.smart-todo-modal-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
-  margin-top: var(--size-4-4);
+.smart-todo-project-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
 }
-.smart-todo-modal-spacer {
-  flex: 1;
-}
-.smart-todo-edit-reveal {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--size-2-1);
-  font-size: var(--font-ui-smaller);
-}
-.smart-todo-edit-reveal-icon svg {
-  width: 14px;
-  height: 14px;
-}
-
-/* --- Category migration preview ------------------------------------- */
 
 .smart-todo-migrate-list {
   margin: var(--size-4-3) 0;
@@ -846,4 +1105,55 @@
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* ======================================================================
+   Settings tab
+   ====================================================================== */
+
+.smart-todo-scope-input {
+  width: 100%;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  resize: vertical;
+}
+.smart-todo-scope-summary {
+  margin: var(--size-2-2) 0 var(--size-4-3);
+  padding-left: var(--size-4-2);
+  border-left: 2px solid var(--background-modifier-border);
+}
+
+/* The accent swatches in settings: the choice is a colour, so the control
+   should be the colour rather than its name in a dropdown. */
+.smart-todo-accent-row {
+  display: flex;
+  gap: var(--size-2-3);
+}
+.smart-todo-accent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) var(--size-2-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.smart-todo-accent:hover {
+  color: var(--text-normal);
+}
+.smart-todo-accent.is-active {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+  border-color: var(--swatch);
+  box-shadow: inset 0 0 0 1px var(--swatch);
+}
+.smart-todo-accent-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--swatch);
 }

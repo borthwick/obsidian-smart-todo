@@ -177,8 +177,14 @@ function stripPhrase(text: string, phrase: string): string {
   return out;
 }
 
-const EFFORT_RE = /\b(heavy|hard|big|moderate|medium|light|easy|quick|small)\b/i;
+// "deep" first in the alternation: it's the only two-word form, and a regex
+// alternation is first-match-wins, so "deep work" must be offered before the
+// bare words that could match inside it.
+const EFFORT_RE =
+  /\b(deep work|deep|heavy|hard|big|moderate|medium|light|easy|quick|small)\b/i;
 const EFFORT_MAP: Record<string, Effort> = {
+  "deep work": "deep",
+  deep: "deep",
   heavy: "heavy",
   hard: "heavy",
   big: "heavy",

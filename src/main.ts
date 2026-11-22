@@ -72,6 +72,29 @@ export default class SmartTodoPlugin extends Plugin {
       callback: () => this.refreshViews(),
     });
 
+    // Both of these open the panel first if it's closed. A command that
+    // silently does nothing because a sidebar isn't visible is worse than one
+    // that takes a beat.
+    this.addCommand({
+      id: "quick-switch",
+      name: "Quick switch (filters and tasks)",
+      callback: () => {
+        void this.withView((view) => view.openPalette());
+      },
+    });
+
+    this.addCommand({
+      id: "start-sweep",
+      name: "Start a sweep of the 3-minute tasks",
+      callback: () => {
+        void this.withView((view) => {
+          if (!view.sweepNow()) {
+            new Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4000);
+          }
+        });
+      },
+    });
+
     this.addCommand({
       id: "migrate-categories",
       name: "Fold projects into categories (Betaworks / Personal / Health)",
@@ -202,6 +225,32 @@ export default class SmartTodoPlugin extends Plugin {
       const view = leaf.view;
       if (view instanceof SmartTodoView) void view.refresh();
     }
+  }
+
+  /**
+   * Full teardown and redraw, for changes a refresh can't carry: the accent
+   * writes CSS custom properties onto the root element at build time, and the
+   * mode row's labels are baked into the DOM.
+   */
+  rebuildViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SMART_TODO)) {
+      const view = leaf.view;
+      if (view instanceof SmartTodoView) view.rebuild();
+    }
+  }
+
+  /**
+   * Run an action against the panel, opening it first if it's closed.
+   *
+   * Palette and Sweep are both commands, and a command that quietly does
+   * nothing because the sidebar happens to be shut is the worst outcome — so
+   * these take a beat to reveal the leaf rather than failing silently.
+   */
+  private async withView(fn: (view: SmartTodoView) => void): Promise<void> {
+    await this.activateView();
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_SMART_TODO)[0];
+    if (!leaf || !(leaf.view instanceof SmartTodoView)) return;
+    fn(leaf.view);
   }
 
   async activateView(): Promise<void> {
