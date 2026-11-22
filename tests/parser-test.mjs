@@ -539,6 +539,119 @@ check("project removed", /project::/.test(cleared), false);
 check("defer survives", /⏳ 2026-11-18/.test(cleared), true);
 check("title survives", cleared.includes("Email Vinneth at Plastic re: FDA"), true);
 
+// ======================================================================
+// 0.9 — inbox triage: where a kept line lands, and what Drop records.
+// ======================================================================
+
+const { insertIndexFor, buildInsertedContent, buildKeptContent, buildDroppedLine, locateTaskLine } =
+  mod.writer;
+const { samePath } = mod.scope;
+
+console.log("\n[samePath — the inbox match, hand-typed and case-insensitive]");
+check("identical", samePath("a/Task inbox.md", "a/Task inbox.md"), true);
+check("case differs", samePath("A/Task Inbox.md", "a/task inbox.md"), true);
+check("leading slash normalized", samePath("/a/b.md", "a/b.md"), true);
+check("different files", samePath("a/b.md", "a/c.md"), false);
+check("blank matches nothing", samePath("", "a/b.md"), false);
+check("null matches nothing", samePath(null, "a/b.md"), false);
+check("two blanks still don't match", samePath("", ""), false);
+
+console.log("\n[insertIndexFor — a triage heading wins]");
+const withHeading = [
+  "# Tasks",
+  "",
+  "## Kept",
+  "- [ ] already triaged",
+  "",
+  "## From OmniFocus",
+  "- [ ] imported",
+].join("\n");
+// Lands after the last line of the Kept section, before the next `##`.
+check("inserts at end of the Kept section", insertIndexFor(withHeading.split("\n")), 4);
+const keptInto = buildInsertedContent(withHeading, "- [ ] fresh capture");
+const keptLines = keptInto.split("\n");
+check("new line is inside Kept", keptLines[4], "- [ ] fresh capture");
+check("not filed under From OmniFocus", keptLines.indexOf("## From OmniFocus") > 4, true);
+
+console.log("\n[insertIndexFor — no heading, so stay above the fence]");
+const withFence = ["# Tasks", "- [ ] one", "", "```dataview", "task", "```"].join("\n");
+check("index is above the blank line before the fence", insertIndexFor(withFence.split("\n")), 2);
+const fenceInto = buildInsertedContent(withFence, "- [ ] two");
+check("line precedes the fence", fenceInto.indexOf("- [ ] two") < fenceInto.indexOf("```"), true);
+check("fence survives intact", /```dataview\ntask\n```/.test(fenceInto), true);
+
+console.log("\n[insertIndexFor — nothing to anchor on, so append]");
+const plain = ["# Tasks", "- [ ] one"].join("\n");
+check("no anchor found", insertIndexFor(plain.split("\n")), -1);
+check("appends at the end", buildInsertedContent(plain, "- [ ] two"), "# Tasks\n- [ ] one\n- [ ] two\n");
+check("trailing newline, exactly one", /\n$/.test(buildInsertedContent(plain, "- [ ] two")), true);
+
+console.log("\n[buildKeptContent — writes the heading the tracker lacks]");
+// The real shape of Task tracker.md: ends in an OmniFocus import section, so
+// a plain append would file a kept task under "### Later".
+const tracker = ["# Tasks", "", "## From OmniFocus", "", "### Later", "- [ ] someday"].join("\n");
+const kept = buildKeptContent(tracker, "- [ ] call the propane place");
+console.log(kept.split("\n").map((l) => `    ${l}`).join("\n"));
+check("a Kept heading now exists", /^## Kept$/m.test(kept), true);
+check("the task sits under it", /## Kept\n\n- \[ \] call the propane place/.test(kept), true);
+check("not filed under ### Later", kept.indexOf("## Kept") > kept.indexOf("### Later"), true);
+check("the someday task is untouched", /- \[ \] someday/.test(kept), true);
+check("blank line before the new heading", /- \[ \] someday\n\n## Kept/.test(kept), true);
+
+const keptTwice = buildKeptContent(kept, "- [ ] second capture");
+check("second Keep reuses the heading", (keptTwice.match(/## Kept/g) || []).length, 1);
+check(
+  "and joins the section",
+  /- \[ \] call the propane place\n- \[ \] second capture/.test(keptTwice),
+  true
+);
+
+const fenced = ["# Tasks", "", "```tasks", "not done", "```"].join("\n");
+const keptFenced = buildKeptContent(fenced, "- [ ] x");
+check("heading goes above a fence, never inside it", keptFenced.indexOf("## Kept") < keptFenced.indexOf("```"), true);
+check("fence intact", /```tasks\nnot done\n```/.test(keptFenced), true);
+
+console.log("\n[locateTaskLine — refuses to guess]");
+const one = parseTasksFromContent("- [ ] alpha\n- [ ] beta", "Tasks.md")[1];
+check("finds the line by content", locateTaskLine(["- [ ] alpha", "- [ ] beta"], one), 1);
+check("finds it after it moved", locateTaskLine(["x", "- [ ] alpha", "- [ ] beta"], one), 2);
+let staleThrew = false;
+try {
+  locateTaskLine(["- [ ] alpha"], one);
+} catch (e) {
+  staleThrew = true;
+}
+check("gone from disk → throws", staleThrew, true);
+check(
+  "recorded line still holds the text → trust it, duplicates or not",
+  locateTaskLine(["- [ ] beta", "- [ ] beta"], one),
+  1
+);
+let ambiguousThrew = false;
+try {
+  // Moved *and* duplicated: nothing left to disambiguate on.
+  locateTaskLine(["- [ ] beta", "x", "- [ ] beta"], one);
+} catch (e) {
+  ambiguousThrew = true;
+}
+check("moved and duplicated → throws rather than picking one", ambiguousThrew, true);
+
+console.log("\n[Drop — a decision, not a deletion]");
+const capture = parseTasksFromContent(
+  "- [ ] call the propane place [stream:: 7f3c-aa] [effort:: light]",
+  "Task inbox.md"
+)[0];
+const droppedLine = buildDroppedLine(capture);
+console.log(`  ${droppedLine}`);
+const droppedTask = parseTasksFromContent(droppedLine, "Task inbox.md")[0];
+check("ticked", droppedTask.status, "done");
+check("dropped date recorded", d(droppedTask.dropped), formatDate(new Date()));
+check("done date recorded too", d(droppedTask.doneDate), formatDate(new Date()));
+check("stream id survives — or the bridge re-adds it", /\[stream:: 7f3c-aa\]/.test(droppedLine), true);
+check("title survives", droppedTask.title, "call the propane place");
+check("one dropped field only", (droppedLine.match(/dropped::/g) || []).length, 1);
+check("an ordinary done line has no dropped date", parseTasksFromContent("- [x] x ✅ 2026-11-01", "T.md")[0].dropped, null);
+
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`
 );

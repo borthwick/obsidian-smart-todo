@@ -21,6 +21,21 @@ function normalizePath(raw: string): string {
 }
 
 /**
+ * Do two vault paths name the same file?
+ *
+ * Normalized and case-insensitive, matching `isInScope`: the vault sits on a
+ * case-insensitive macOS volume, and the inbox path is typed by hand in
+ * settings, so `task inbox.md` must still match `Task inbox.md`. A blank or
+ * missing path matches nothing — "no inbox configured" is not "every file".
+ */
+export function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const left = normalizePath(a).toLowerCase();
+  const right = normalizePath(b).toLowerCase();
+  return left.length > 0 && left === right;
+}
+
+/**
  * Parse the `managedFiles` setting into scope entries.
  *
  * Accepts comma- or newline-separated entries so a longer list can be pasted

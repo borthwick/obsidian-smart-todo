@@ -626,6 +626,118 @@
 }
 
 /* ======================================================================
+   Inbox — untriaged captures
+   ====================================================================== */
+
+/* Tinted and boxed, unlike the quadrant sections, because this isn't another
+   slice of the list — it's a holding pen that's supposed to end up empty. */
+.stw-inbox {
+  margin: var(--size-2-2) 0 var(--size-4-3);
+  padding: var(--size-2-2) var(--size-2-2) var(--size-2-3);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--stw-accent) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--stw-accent) 22%, transparent);
+}
+.stw-inbox-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: 0 var(--size-2-2);
+  cursor: pointer;
+  user-select: none;
+}
+.stw-inbox-caret {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+.stw-inbox-caret .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+.stw-inbox-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--stw-accent);
+}
+.stw-inbox-count {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+.stw-inbox-note {
+  padding: var(--size-2-1) var(--size-2-2) var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.stw-inbox-row {
+  padding: var(--size-2-2);
+  border-top: 1px solid var(--background-modifier-border);
+}
+.stw-inbox-row:first-of-type {
+  border-top: none;
+}
+.stw-inbox-row .stw-task-title {
+  cursor: text;
+}
+
+/* Three verbs, equal weight. Keep is tinted rather than filled: it's the
+   likeliest choice, but Drop shouldn't feel like a mistake to reach for. */
+.stw-inbox-actions {
+  display: flex;
+  gap: var(--size-2-2);
+  margin-top: var(--size-2-2);
+}
+.stw-inbox-btn {
+  padding: var(--size-2-1) var(--size-2-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  box-shadow: none;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.stw-inbox-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.stw-inbox-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.stw-inbox-btn.is-keep {
+  border-color: color-mix(in srgb, var(--stw-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--stw-accent) 12%, transparent);
+  color: var(--stw-accent);
+  font-weight: var(--font-semibold);
+}
+.stw-inbox-btn.is-keep:hover {
+  background: var(--stw-accent);
+  color: #fff;
+}
+.stw-inbox-btn.is-drop:hover {
+  color: var(--text-error);
+}
+
+/* The inbox is full but the filtered list below it isn't — say so, rather
+   than showing the full "nothing here" empty state under a stack of rows. */
+.stw-inbox-only {
+  padding: var(--size-4-2) var(--size-2-3);
+  text-align: center;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.stw-date.is-dropped {
+  font-style: italic;
+}
+
+/* ======================================================================
    Empty states
    ====================================================================== */
 
@@ -680,8 +792,25 @@
   font-size: var(--font-ui-smaller);
 }
 .stw-sweep-banner-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
+}
+
+/* The time ring, beside any duration estimate. Same motif as the sweep
+   modal's countdown ring, two sizes apart, so "about 27m" and the running
+   clock read as one idea. */
+.stw-time-glyph {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.stw-time-glyph-track {
+  stroke: color-mix(in srgb, var(--text-faint) 45%, transparent);
+}
+.stw-time-glyph-arc {
+  stroke: var(--stw-accent);
 }
 .stw-sweep-banner-btn {
   flex: 0 0 auto;
@@ -709,6 +838,10 @@
   font-weight: var(--font-semibold);
 }
 .stw-sweep-intro-sub {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   margin: var(--size-2-2) 0 var(--size-4-2);
   font-size: var(--font-ui-smaller);
   line-height: 1.45;

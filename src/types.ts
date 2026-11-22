@@ -136,6 +136,12 @@ export interface SmartTask {
   due: Date | null;
   defer: Date | null;
   doneDate: Date | null;
+  /**
+   * Set when a capture was let go rather than finished (Drop in the Inbox
+   * bucket). Stored as `[dropped:: YYYY-MM-DD]` on an otherwise completed
+   * line, so "I decided not to" stays distinguishable from "I did it".
+   */
+  dropped: Date | null;
   effort: Effort | null;
   pushes: number;
   project: string | null;
@@ -253,6 +259,19 @@ export interface SmartTodoSettings {
    * An entry ending in `.md` is a file; anything else is a folder (recursive).
    */
   managedFiles: string;
+  /**
+   * The capture file, if there is one. Open tasks living here are *untriaged*:
+   * they appear in their own Inbox bucket at the top of the panel and nowhere
+   * else, with Keep / Edit / Drop instead of the usual row controls.
+   *
+   * Why a separate bucket rather than one merged list: voice capture is
+   * deliberately frictionless, so what lands here is half-formed — no size, no
+   * category, usually no date. Merged into the working list those items either
+   * add clutter or, being undated, disappear from Today altogether, which is
+   * how a capture silently goes nowhere. Blank disables the idea entirely and
+   * the file (if it's in scope at all) behaves like any other.
+   */
+  inboxFile: string;
   /** Pushes count at or above which the badge turns amber (the Onda signal). */
   pushesWarnThreshold: number;
   /** "card" (stacked rows) or "table" (Onda-style sortable columns). */
@@ -284,6 +303,7 @@ export const DEFAULT_MANAGED_FILE = "Tasks.md";
 
 export const DEFAULT_SETTINGS: SmartTodoSettings = {
   managedFiles: DEFAULT_MANAGED_FILE,
+  inboxFile: "",
   pushesWarnThreshold: 3,
   defaultLayout: "card",
   groupQuickies: true,

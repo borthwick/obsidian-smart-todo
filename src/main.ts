@@ -7,7 +7,7 @@
 
 import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { scanScope } from "./parser";
-import { isInScope, parseScope, primaryManagedFile } from "./scope";
+import { isInScope, parseScope, primaryManagedFile, samePath } from "./scope";
 import { SmartTodoSettingTab } from "./settings";
 import { AddTaskModal } from "./add-task-modal";
 import {
@@ -146,9 +146,32 @@ export default class SmartTodoPlugin extends Plugin {
     return isInScope(path, this.scope);
   }
 
-  /** The file new tasks are appended to. */
+  /** The file new tasks are appended to — and where Keep moves a capture. */
   get primaryFile(): string {
     return primaryManagedFile(this.scope);
+  }
+
+  /** The configured capture file, or null when there's no inbox. */
+  get inboxPath(): string | null {
+    const raw = this.settings.inboxFile?.trim();
+    return raw ? raw : null;
+  }
+
+  /**
+   * Is this an untriaged capture?
+   *
+   * Open *and* in the inbox file. A completed line there has already been
+   * dealt with, so it rejoins the ordinary list (and shows under Done) rather
+   * than sitting in the triage bucket forever.
+   */
+  isInboxTask(task: SmartTask): boolean {
+    return task.status === "open" && samePath(task.filePath, this.inboxPath);
+  }
+
+  /** True when an inbox is configured but isn't actually being scanned. */
+  get inboxOutOfScope(): boolean {
+    const path = this.inboxPath;
+    return !!path && !this.isInManagedScope(path);
   }
 
   async scan(): Promise<SmartTask[]> {

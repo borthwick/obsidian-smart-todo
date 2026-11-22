@@ -108,6 +108,7 @@ var ACCENTS = {
 var DEFAULT_MANAGED_FILE = "Tasks.md";
 var DEFAULT_SETTINGS = {
   managedFiles: DEFAULT_MANAGED_FILE,
+  inboxFile: "",
   pushesWarnThreshold: 3,
   defaultLayout: "card",
   groupQuickies: true,
@@ -182,6 +183,13 @@ var VIEW_TYPE_SMART_TODO = "smart-todo-view";
 // src/scope.ts
 function normalizePath(raw) {
   return raw.trim().replace(/^["']|["']$/g, "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").trim();
+}
+function samePath(a, b) {
+  if (!a || !b)
+    return false;
+  const left = normalizePath(a).toLowerCase();
+  const right = normalizePath(b).toLowerCase();
+  return left.length > 0 && left === right;
 }
 function parseScope(raw) {
   const parts = (raw != null ? raw : "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
@@ -316,6 +324,7 @@ function parseTaskLine(line, filePath, lineNumber) {
     due: dueMatch ? parseDate(dueMatch[1]) : null,
     defer: deferMatch ? parseDate(deferMatch[1]) : null,
     doneDate: doneMatch ? parseDate(doneMatch[1]) : null,
+    dropped: fields["dropped"] ? parseDate(fields["dropped"]) : null,
     effort: fields["effort"] ? normalizeEffort(fields["effort"]) : null,
     pushes: Number.isFinite(pushesParsed) && pushesParsed > 0 ? pushesParsed : 0,
     project: fields["project"] || null,
@@ -410,6 +419,38 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         renderSummary();
       })
     );
+    new import_obsidian.Setting(el).setName("Inbox file").setDesc(
+      `Optional. Open tasks in this file are treated as untriaged captures: they show in an Inbox bucket at the top of the panel and nowhere else. Keep moves one into ${primaryManagedFile(this.plugin.scope)}. Leave blank to turn the Inbox off.`
+    ).addText((text) => {
+      text.setPlaceholder("Task inbox.md").setValue(this.plugin.settings.inboxFile).onChange(async (value) => {
+        this.plugin.settings.inboxFile = value;
+        await this.plugin.saveSettings();
+        renderInboxWarning();
+        this.plugin.refreshViews();
+      });
+      text.inputEl.addClass("smart-todo-scope-input");
+    });
+    const inboxWarning = el.createDiv();
+    const renderInboxWarning = () => {
+      inboxWarning.empty();
+      if (!this.plugin.inboxOutOfScope)
+        return;
+      const path = this.plugin.inboxPath;
+      inboxWarning.createDiv({
+        cls: "setting-item-description",
+        text: `\u26A0 ${path} isn't in the managed scope above, so it's never scanned \u2014 the Inbox will stay empty.`
+      });
+      new import_obsidian.Setting(inboxWarning).setName("Add the inbox to managed files").addButton(
+        (btn) => btn.setButtonText("Add to scope").onClick(async () => {
+          const current = this.plugin.settings.managedFiles.trim();
+          this.plugin.settings.managedFiles = current ? `${current}, ${path}` : path;
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+          this.display();
+        })
+      );
+    };
+    renderInboxWarning();
     el.createEl("h3", { text: "Display" });
     const accentSetting = new import_obsidian.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
     const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
@@ -544,32 +585,7 @@ function getFile(app, path) {
   }
   return file;
 }
-async function replaceTaskLine(app, task, newLine) {
-  const file = getFile(app, task.filePath);
-  const mutate = (content) => {
-    const lines = content.split("\n");
-    let index = task.lineNumber;
-    if (lines[index] !== task.rawText) {
-      const matches = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i] === task.rawText)
-          matches.push(i);
-      }
-      if (matches.length === 0) {
-        throw new StaleTaskError(
-          `Task line changed on disk in ${task.filePath}; refresh and retry.`
-        );
-      }
-      if (matches.length > 1) {
-        throw new StaleTaskError(
-          `Found ${matches.length} identical task lines in ${task.filePath}; refusing to guess.`
-        );
-      }
-      index = matches[0];
-    }
-    lines[index] = newLine;
-    return lines.join("\n");
-  };
+async function processFile(app, file, mutate) {
   const vault = app.vault;
   if (typeof vault.process === "function") {
     await vault.process(file, mutate);
@@ -577,6 +593,34 @@ async function replaceTaskLine(app, task, newLine) {
     const content = await app.vault.read(file);
     await app.vault.modify(file, mutate(content));
   }
+}
+function locateTaskLine(lines, task) {
+  if (lines[task.lineNumber] === task.rawText)
+    return task.lineNumber;
+  const matches = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === task.rawText)
+      matches.push(i);
+  }
+  if (matches.length === 0) {
+    throw new StaleTaskError(
+      `Task line changed on disk in ${task.filePath}; refresh and retry.`
+    );
+  }
+  if (matches.length > 1) {
+    throw new StaleTaskError(
+      `Found ${matches.length} identical task lines in ${task.filePath}; refusing to guess.`
+    );
+  }
+  return matches[0];
+}
+async function replaceTaskLine(app, task, newLine) {
+  const file = getFile(app, task.filePath);
+  await processFile(app, file, (content) => {
+    const lines = content.split("\n");
+    lines[locateTaskLine(lines, task)] = newLine;
+    return lines.join("\n");
+  });
 }
 function setInlineField(line, key, value) {
   const re = new RegExp(`\\[${key}\\s*::\\s*[^\\]]*\\]`, "i");
@@ -714,8 +758,7 @@ async function applyTaskPatch(app, task, patch) {
   await replaceTaskLine(app, task, next);
 }
 var MANAGED_FILE_STUB = "# Tasks\n\n";
-function buildAppendedContent(content, title) {
-  const line = `- [ ] ${title.trim()}`;
+function appendRawLine(content, line) {
   const lines = content.split("\n");
   while (lines.length > 0 && lines[lines.length - 1].trim() === "")
     lines.pop();
@@ -726,6 +769,63 @@ function buildAppendedContent(content, title) {
     lines.push("");
   lines.push(line);
   return `${lines.join("\n")}
+`;
+}
+var TRIAGE_HEADING_RE = /^(#{1,6})\s+(?:kept|triaged|inbox)\b/i;
+function insertIndexFor(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const heading = TRIAGE_HEADING_RE.exec(lines[i]);
+    if (!heading)
+      continue;
+    const level = heading[1].length;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = /^(#{1,6})\s/.exec(lines[j]);
+      if (next && next[1].length <= level) {
+        end = j;
+        break;
+      }
+    }
+    while (end > i + 1 && lines[end - 1].trim() === "")
+      end--;
+    return end;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trimStart().startsWith("```")) {
+      let j = i;
+      while (j > 0 && lines[j - 1].trim() === "")
+        j--;
+      return j;
+    }
+  }
+  return -1;
+}
+function buildInsertedContent(content, line) {
+  const lines = content.split("\n");
+  const at = insertIndexFor(lines);
+  if (at < 0)
+    return appendRawLine(content, line);
+  lines.splice(at, 0, line);
+  return `${lines.join("\n").replace(/\n+$/, "")}
+`;
+}
+function buildKeptContent(content, line) {
+  const lines = content.split("\n");
+  if (lines.some((l) => TRIAGE_HEADING_RE.test(l))) {
+    return buildInsertedContent(content, line);
+  }
+  if (insertIndexFor(lines) < 0) {
+    const sep = content.trim() ? "\n" : "";
+    return appendRawLine(content, `${sep}## Kept
+
+${line}`);
+  }
+  const at = insertIndexFor(lines);
+  const block = ["## Kept", "", line, ""];
+  if (at > 0 && lines[at - 1].trim() !== "")
+    block.unshift("");
+  lines.splice(at, 0, ...block);
+  return `${lines.join("\n").replace(/\n+$/, "")}
 `;
 }
 async function ensureManagedFile(app, path) {
@@ -749,16 +849,42 @@ async function appendTask(app, path, title) {
   if (!trimmed)
     throw new StaleTaskError("Task title is empty.");
   const file = await ensureManagedFile(app, path);
-  const vault = app.vault;
-  if (typeof vault.process === "function") {
-    await vault.process(
-      file,
-      (content) => buildAppendedContent(content, trimmed)
+  await processFile(
+    app,
+    file,
+    (content) => buildInsertedContent(content, `- [ ] ${trimmed}`)
+  );
+}
+async function moveTaskLine(app, task, targetPath) {
+  if (samePath(task.filePath, targetPath))
+    return;
+  const source = getFile(app, task.filePath);
+  const content = await app.vault.read(source);
+  locateTaskLine(content.split("\n"), task);
+  const target = await ensureManagedFile(app, targetPath);
+  await processFile(app, target, (c) => buildKeptContent(c, task.rawText));
+  try {
+    await processFile(app, source, (c) => {
+      const lines = c.split("\n");
+      lines.splice(locateTaskLine(lines, task), 1);
+      return lines.join("\n");
+    });
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    throw new StaleTaskError(
+      `Copied into ${targetPath}, but couldn't remove it from ${task.filePath} \u2014 it's now in both files. Delete one by hand. (${why})`
     );
-  } else {
-    const content = await app.vault.read(file);
-    await app.vault.modify(file, buildAppendedContent(content, trimmed));
   }
+}
+function buildDroppedLine(task) {
+  return setInlineField(
+    buildToggledLine(task, true),
+    "dropped",
+    formatDate(startOfToday())
+  );
+}
+async function dropTask(app, task) {
+  await replaceTaskLine(app, task, buildDroppedLine(task));
 }
 async function safeWrite(fn) {
   try {
@@ -1667,6 +1793,8 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     this.search = "";
     this.tasks = [];
     this.loading = false;
+    /** Inbox bucket expanded? Collapsed is a legitimate "not now", not a hide. */
+    this.inboxOpen = true;
     this.plugin = plugin;
   }
   getViewType() {
@@ -1886,7 +2014,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     wrap.createDiv({ cls: "stw-row-label", text: "I have\u2026" });
     const row = wrap.createDiv({ cls: "stw-row stw-budgets" });
     for (const b of BUDGETS) {
-      const count = this.tasks.filter(
+      const count = this.listTasks.filter(
         (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category) && fitsBudget(t, b.id)
       ).length;
       const btn = row.createEl("button", { cls: "stw-budget" });
@@ -1935,12 +2063,41 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       search: this.search
     };
   }
+  /**
+   * The working list: everything the panel's filters apply to.
+   *
+   * One rule, no exceptions: an *open* task in the inbox file appears in the
+   * Inbox bucket and nowhere else. It's held out of the list, out of the mode
+   * counts, out of the budget counts and out of a sweep, so a count can never
+   * promise something the list below it doesn't show. Keep it and it joins
+   * this set; drop it and it leaves as a completed line.
+   */
+  get listTasks() {
+    if (!this.plugin.inboxPath)
+      return this.tasks;
+    return this.tasks.filter((t) => !this.plugin.isInboxTask(t));
+  }
   visibleTasks() {
-    return selectTasks(this.tasks, this.query);
+    return selectTasks(this.listTasks, this.query);
+  }
+  /**
+   * The triage queue, oldest capture first.
+   *
+   * Deliberately not run through `selectTasks`: a capture usually has no date
+   * and no effort, so every filter in the panel would hide it — which is
+   * exactly how a voice note silently goes nowhere. Search is the one filter
+   * that applies, because searching for something you just said and not
+   * finding it would be worse.
+   */
+  inboxTasks() {
+    if (!this.plugin.inboxPath)
+      return [];
+    const needle = this.search.trim().toLowerCase();
+    return this.tasks.filter((t) => this.plugin.isInboxTask(t)).filter((t) => !needle || t.title.toLowerCase().includes(needle)).sort((a, b) => a.lineNumber - b.lineNumber);
   }
   /** The number on each mode button — what that mode would show right now. */
   countForMode(mode) {
-    const base = this.tasks.filter(
+    const base = this.listTasks.filter(
       (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category)
     );
     if (mode === "lanes") {
@@ -1960,9 +2117,20 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       this.bodyEl.createDiv({ cls: "stw-empty", text: "Scanning\u2026" });
       return;
     }
+    const inbox = this.inboxTasks();
+    const showInbox = inbox.length > 0 && this.mode !== "sweep" && this.horizon !== "done";
+    if (showInbox)
+      this.renderInbox(inbox, today);
     const tasks = this.visibleTasks();
     if (tasks.length === 0) {
-      this.renderEmpty();
+      if (showInbox) {
+        this.bodyEl.createDiv({
+          cls: "stw-inbox-only",
+          text: "Nothing else on the list."
+        });
+      } else {
+        this.renderEmpty();
+      }
       return;
     }
     if (this.mode === "lanes")
@@ -1972,9 +2140,90 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     else
       this.renderFocus(tasks, today);
   }
+  // --- Inbox ---------------------------------------------------------------
+  //
+  // 0.9. Before this, captures from the Stream voice ring landed in the same
+  // merged list as everything else, with no way to tell triaged from
+  // untriaged and no way to promote one except cutting the line by hand in
+  // the note. The split existed on disk (a file only the ingest script writes)
+  // but not in the UI, which made it a write-safety boundary and nothing more.
+  //
+  // Three verbs, because that's all triage is: Keep it (move it into the
+  // working list), Edit it (it arrived half-formed), Drop it (never mind).
+  renderInbox(inbox, today) {
+    const wrap = this.bodyEl.createDiv({ cls: "stw-inbox" });
+    const head = wrap.createDiv({ cls: "stw-inbox-head" });
+    const caret = head.createSpan({ cls: "stw-inbox-caret" });
+    (0, import_obsidian7.setIcon)(caret, this.inboxOpen ? "chevron-down" : "chevron-right");
+    head.createSpan({ cls: "stw-inbox-title", text: "Inbox" });
+    head.createSpan({ cls: "stw-inbox-count", text: String(inbox.length) });
+    head.setAttr(
+      "aria-label",
+      `${inbox.length} untriaged capture${inbox.length === 1 ? "" : "s"} \u2014 click to ${this.inboxOpen ? "collapse" : "expand"}`
+    );
+    head.addEventListener("click", () => {
+      this.inboxOpen = !this.inboxOpen;
+      this.render();
+    });
+    if (!this.inboxOpen)
+      return;
+    wrap.createDiv({
+      cls: "stw-inbox-note",
+      text: "Captured, not yet decided. Keep moves it onto the list."
+    });
+    for (const task of inbox)
+      this.renderInboxRow(wrap, task, today);
+  }
+  /**
+   * A triage row. No checkbox: ticking a capture off is the ambiguous act —
+   * did you do it, or did you decide it wasn't real? Keep and Drop answer
+   * that, and the size/category chips are live so the one thing triage
+   * actually needs (how big is this?) can be set without leaving the row.
+   */
+  renderInboxRow(parent, task, today) {
+    const row = parent.createDiv({ cls: "stw-inbox-row" });
+    const titleEl = row.createDiv({
+      cls: "stw-task-title",
+      text: task.title || "(untitled capture)"
+    });
+    titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
+    titleEl.addEventListener("click", () => this.openEditor(task));
+    const meta = row.createDiv({ cls: "stw-task-meta" });
+    this.renderCategoryChip(meta, task);
+    this.renderEffortPill(meta, task);
+    if (task.due) {
+      meta.createSpan({ cls: "stw-date", text: this.humanDate(task.due, today) });
+    }
+    const actions = row.createDiv({ cls: "stw-inbox-actions" });
+    const target = this.plugin.primaryFile;
+    const keep = actions.createEl("button", { cls: "stw-inbox-btn is-keep", text: "Keep" });
+    keep.setAttr("aria-label", `Move it into ${target}`);
+    keep.addEventListener("click", async (evt) => {
+      evt.stopPropagation();
+      keep.disabled = true;
+      const ok = await safeWrite(() => moveTaskLine(this.app, task, target));
+      if (ok)
+        new import_obsidian7.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
+      await this.refresh();
+    });
+    const edit = actions.createEl("button", { cls: "stw-inbox-btn", text: "Edit" });
+    edit.setAttr("aria-label", "Fix the wording, size or date before deciding");
+    edit.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.openEditor(task);
+    });
+    const drop = actions.createEl("button", { cls: "stw-inbox-btn is-drop", text: "Drop" });
+    drop.setAttr("aria-label", "Let it go \u2014 the line stays, ticked and dated");
+    drop.addEventListener("click", async (evt) => {
+      evt.stopPropagation();
+      drop.disabled = true;
+      await safeWrite(() => dropTask(this.app, task));
+      await this.refresh();
+    });
+  }
   renderEmpty() {
     const empty = this.bodyEl.createDiv({ cls: "stw-empty" });
-    if (this.tasks.length === 0) {
+    if (this.listTasks.length === 0) {
       empty.createDiv({ cls: "stw-empty-head", text: "No tasks in scope." });
       empty.createDiv({
         cls: "stw-empty-note",
@@ -1988,7 +2237,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       return;
     }
     if (this.budget !== "any") {
-      const untagged = this.tasks.filter(
+      const untagged = this.listTasks.filter(
         (t) => matchesHorizon(t, this.horizon) && matchesCategory(t, this.category) && !t.effort
       ).length;
       empty.createDiv({ cls: "stw-empty-head", text: "Nothing fits that window." });
@@ -2041,6 +2290,38 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     }
   }
   /**
+   * A tiny ring, drawn beside any time estimate.
+   *
+   * Deliberately the same motif as the sweep timer's countdown ring, so the
+   * "about 27m" on the banner and the "2:14 / of 3:00" you see mid-sweep read
+   * as the same idea at two sizes. A partial arc rather than a full circle —
+   * a complete ring looks like a status dot, an arc looks like elapsed time.
+   */
+  renderTimeGlyph(parent) {
+    const svg = parent.createSvg("svg", {
+      cls: "stw-time-glyph",
+      attr: {
+        viewBox: "0 0 16 16",
+        width: "12",
+        height: "12",
+        "aria-hidden": "true",
+        focusable: "false"
+      }
+    });
+    const ring = { cx: "8", cy: "8", r: "6", fill: "none", "stroke-width": "2" };
+    svg.createSvg("circle", { cls: "stw-time-glyph-track", attr: { ...ring } });
+    svg.createSvg("circle", {
+      cls: "stw-time-glyph-arc",
+      attr: {
+        ...ring,
+        "stroke-linecap": "round",
+        // r=6 → circumference 37.7; 26.4 ≈ 70% of the way round.
+        "stroke-dasharray": "26.4 37.7",
+        transform: "rotate(-90 8 8)"
+      }
+    });
+  }
+  /**
    * The quick-wins banner. This is the element that most changes behaviour:
    * it names the pile of small stuff as a single batch with a duration and a
    * button, which is the difference between "41 open tasks" and "ten minutes".
@@ -2054,10 +2335,9 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       cls: "stw-sweep-banner-head",
       text: `${quickies.length} quick win${quickies.length === 1 ? "" : "s"}`
     });
-    text.createDiv({
-      cls: "stw-sweep-banner-sub",
-      text: `about ${formatDuration(estimateMinutes(quickies))}`
-    });
+    const sub = text.createDiv({ cls: "stw-sweep-banner-sub" });
+    this.renderTimeGlyph(sub);
+    sub.createSpan({ text: `about ${formatDuration(estimateMinutes(quickies))}` });
     const btn = banner.createEl("button", { cls: "stw-sweep-banner-btn", text: "Sweep" });
     btn.addEventListener("click", () => this.startSweep(quickies));
   }
@@ -2069,12 +2349,17 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       cls: "stw-sweep-intro-head",
       text: queue.length === 0 ? "Nothing under 3 minutes." : "Everything under 3 minutes"
     });
-    head.createDiv({
-      cls: "stw-sweep-intro-sub",
-      text: queue.length === 0 ? "Tag a task's effort as 3 min and it shows up here." : `${queue.length} task${queue.length === 1 ? "" : "s"} \xB7 about ${formatDuration(
-        estimateMinutes(queue)
-      )}`
-    });
+    const sub = head.createDiv({ cls: "stw-sweep-intro-sub" });
+    if (queue.length === 0) {
+      sub.createSpan({ text: "Tag a task's effort as 3 min and it shows up here." });
+    } else {
+      this.renderTimeGlyph(sub);
+      sub.createSpan({
+        text: `${queue.length} task${queue.length === 1 ? "" : "s"} \xB7 about ${formatDuration(
+          estimateMinutes(queue)
+        )}`
+      });
+    }
     if (queue.length > 0) {
       const btn = head.createEl("button", { cls: "stw-btn is-primary", text: "Start sweep" });
       btn.addEventListener("click", () => this.startSweep(queue));
@@ -2173,29 +2458,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
     const meta = main.createDiv({ cls: "stw-task-meta" });
     this.renderCategoryChip(meta, task);
-    if (task.effort) {
-      const pill = meta.createSpan({
-        cls: `stw-effort is-${task.effort}`,
-        attr: { "aria-label": "Click to change" }
-      });
-      if (task.effort === "light")
-        (0, import_obsidian7.setIcon)(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
-      pill.createSpan({ text: EFFORT_LABEL[task.effort] });
-      const open = (evt) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.showEffortMenu(evt, task);
-      };
-      pill.addEventListener("click", open);
-      pill.addEventListener("contextmenu", open);
-    } else {
-      const pill = meta.createSpan({ cls: "stw-effort is-unset", text: "+ size" });
-      pill.addEventListener("click", (evt) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.showEffortMenu(evt, task);
-      });
-    }
+    this.renderEffortPill(meta, task);
     if (task.due) {
       meta.createSpan({ cls: "stw-date", text: this.humanDate(task.due, today) });
     }
@@ -2218,7 +2481,9 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     if (task.assigned) {
       meta.createSpan({ cls: "stw-assigned", text: `@${task.assigned}` });
     }
-    if (task.status === "done" && task.doneDate) {
+    if (task.dropped) {
+      meta.createSpan({ cls: "stw-date is-dropped", text: `dropped ${formatDate(task.dropped)}` });
+    } else if (task.status === "done" && task.doneDate) {
       meta.createSpan({ cls: "stw-date", text: `done ${formatDate(task.doneDate)}` });
     }
     const actions = row.createDiv({ cls: "stw-task-actions" });
@@ -2236,6 +2501,33 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
         await this.refresh();
       });
     }
+  }
+  /**
+   * The size control. Effort reads as a duration, not a weight class — "3 min"
+   * is a fact you can act on, "Light" was a label you had to translate first.
+   * Unsized shows "+ size" rather than nothing, because an unsized task is
+   * invisible to every budget filter and that needs to be fixable in place.
+   */
+  renderEffortPill(parent, task) {
+    const open = (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.showEffortMenu(evt, task);
+    };
+    if (!task.effort) {
+      const unset = parent.createSpan({ cls: "stw-effort is-unset", text: "+ size" });
+      unset.addEventListener("click", open);
+      return;
+    }
+    const pill = parent.createSpan({
+      cls: `stw-effort is-${task.effort}`,
+      attr: { "aria-label": "Click to change" }
+    });
+    if (task.effort === "light")
+      (0, import_obsidian7.setIcon)(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
+    pill.createSpan({ text: EFFORT_LABEL[task.effort] });
+    pill.addEventListener("click", open);
+    pill.addEventListener("contextmenu", open);
   }
   /**
    * Importance. Three states cycle on click:
@@ -2551,9 +2843,30 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
   isInManagedScope(path) {
     return isInScope(path, this.scope);
   }
-  /** The file new tasks are appended to. */
+  /** The file new tasks are appended to — and where Keep moves a capture. */
   get primaryFile() {
     return primaryManagedFile(this.scope);
+  }
+  /** The configured capture file, or null when there's no inbox. */
+  get inboxPath() {
+    var _a;
+    const raw = (_a = this.settings.inboxFile) == null ? void 0 : _a.trim();
+    return raw ? raw : null;
+  }
+  /**
+   * Is this an untriaged capture?
+   *
+   * Open *and* in the inbox file. A completed line there has already been
+   * dealt with, so it rejoins the ordinary list (and shows under Done) rather
+   * than sitting in the triage bucket forever.
+   */
+  isInboxTask(task) {
+    return task.status === "open" && samePath(task.filePath, this.inboxPath);
+  }
+  /** True when an inbox is configured but isn't actually being scanned. */
+  get inboxOutOfScope() {
+    const path = this.inboxPath;
+    return !!path && !this.isInManagedScope(path);
   }
   async scan() {
     return scanScope(this.app, this.scope);

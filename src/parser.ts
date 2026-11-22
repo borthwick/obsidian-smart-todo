@@ -162,6 +162,7 @@ export function parseTaskLine(
     due: dueMatch ? parseDate(dueMatch[1]) : null,
     defer: deferMatch ? parseDate(deferMatch[1]) : null,
     doneDate: doneMatch ? parseDate(doneMatch[1]) : null,
+    dropped: fields["dropped"] ? parseDate(fields["dropped"]) : null,
     effort: fields["effort"] ? normalizeEffort(fields["effort"]) : null,
     pushes: Number.isFinite(pushesParsed) && pushesParsed > 0 ? pushesParsed : 0,
     project: fields["project"] || null,

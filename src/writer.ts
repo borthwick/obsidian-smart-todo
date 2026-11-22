@@ -7,6 +7,7 @@
 
 import { App, Notice, TFile } from "obsidian";
 import { Effort, SmartTask } from "./types";
+import { samePath } from "./scope";
 import {
   DEFER_RE,
   DONE_DATE_RE,
@@ -28,15 +29,60 @@ function getFile(app: App, path: string): TFile {
 }
 
 /**
+ * Read-modify-write one file under Obsidian's own lock.
+ *
+ * `vault.process` (1.6+) holds the file lock across the read and the write, so
+ * a concurrent edit can't interleave. The fallback keeps older hosts working
+ * with the same mutation function — just without the lock.
+ */
+async function processFile(
+  app: App,
+  file: TFile,
+  mutate: (content: string) => string
+): Promise<void> {
+  const vault = app.vault as any;
+  if (typeof vault.process === "function") {
+    await vault.process(file, mutate);
+  } else {
+    const content = await app.vault.read(file);
+    await app.vault.modify(file, mutate(content));
+  }
+}
+
+/**
+ * Find the line `task` was parsed from inside `lines`, or throw.
+ *
+ * Matching is by (lineNumber, exact rawText). If the line moved — a paragraph
+ * was inserted above it — fall back to a whole-file search, but only accept a
+ * *unique* match; two identical task lines are ambiguous and we refuse rather
+ * than guess. Shared by every mutation so replace, move and delete all hold
+ * the same standard of proof before touching a file.
+ */
+export function locateTaskLine(lines: string[], task: SmartTask): number {
+  if (lines[task.lineNumber] === task.rawText) return task.lineNumber;
+
+  const matches: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === task.rawText) matches.push(i);
+  }
+  if (matches.length === 0) {
+    throw new StaleTaskError(
+      `Task line changed on disk in ${task.filePath}; refresh and retry.`
+    );
+  }
+  if (matches.length > 1) {
+    throw new StaleTaskError(
+      `Found ${matches.length} identical task lines in ${task.filePath}; refusing to guess.`
+    );
+  }
+  return matches[0];
+}
+
+/**
  * Replace the single line `task` came from with `newLine`.
  *
- * Matching is by (path, lineNumber, exact rawText). If the line moved — a
- * paragraph was inserted above it — we fall back to a whole-file search, but
- * only accept a *unique* match; two identical task lines are ambiguous and we
- * refuse rather than guess.
- *
- * Uses `vault.process` (read-modify-write under Obsidian's own file lock,
- * 1.6+) so a concurrent edit can't interleave.
+ * Never rewrites more than that one line: every other line is passed through
+ * in order, so a stale view can't clobber an edit made elsewhere in the file.
  */
 export async function replaceTaskLine(
   app: App,
@@ -44,41 +90,11 @@ export async function replaceTaskLine(
   newLine: string
 ): Promise<void> {
   const file = getFile(app, task.filePath);
-
-  const mutate = (content: string): string => {
+  await processFile(app, file, (content) => {
     const lines = content.split("\n");
-
-    let index = task.lineNumber;
-    if (lines[index] !== task.rawText) {
-      const matches: number[] = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i] === task.rawText) matches.push(i);
-      }
-      if (matches.length === 0) {
-        throw new StaleTaskError(
-          `Task line changed on disk in ${task.filePath}; refresh and retry.`
-        );
-      }
-      if (matches.length > 1) {
-        throw new StaleTaskError(
-          `Found ${matches.length} identical task lines in ${task.filePath}; refusing to guess.`
-        );
-      }
-      index = matches[0];
-    }
-
-    lines[index] = newLine;
+    lines[locateTaskLine(lines, task)] = newLine;
     return lines.join("\n");
-  };
-
-  const vault = app.vault as any;
-  if (typeof vault.process === "function") {
-    await vault.process(file, mutate);
-  } else {
-    // Pre-1.6 fallback. Same safety check, just without the file lock.
-    const content = await app.vault.read(file);
-    await app.vault.modify(file, mutate(content));
-  }
+  });
 }
 
 /** Set or replace an inline `[key:: value]` field, appending if absent. */
@@ -377,13 +393,103 @@ export const MANAGED_FILE_STUB = "# Tasks\n\n";
  * UI, so capture stays a single keystroke.
  */
 export function buildAppendedContent(content: string, title: string): string {
-  const line = `- [ ] ${title.trim()}`;
+  return appendRawLine(content, `- [ ] ${title.trim()}`);
+}
+
+/** The blank-line-tidying append, for a line that's already fully formed. */
+function appendRawLine(content: string, line: string): string {
   const lines = content.split("\n");
   while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
   if (lines.length === 0) return `${line}\n`;
   if (/\n[ \t]*\n[ \t\r\n]*$/.test(content)) lines.push("");
   lines.push(line);
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * A heading that claims triaged items. Adding `## Kept` (or Triaged, or Inbox)
+ * anywhere in the file is how you say "put them here" without a setting for
+ * it; if the file has none, the first Keep writes one. See buildKeptContent.
+ */
+const TRIAGE_HEADING_RE = /^(#{1,6})\s+(?:kept|triaged|inbox)\b/i;
+
+/**
+ * Where a line should be inserted in `lines`, or -1 for "append to the end".
+ *
+ * Two cases earn the complexity:
+ *
+ * - A `## Kept` heading means the file has already been told where triaged
+ *   work goes; the line joins the end of that section.
+ * - A fenced block — John put a ```tasks query at the foot of the inbox — must
+ *   never be written past. A blind append puts the task *inside* a code block
+ *   in reading view, where it still parses but is invisible and unclickable.
+ *   The Stream ingest script hit exactly this and solves it the same way.
+ */
+export function insertIndexFor(lines: string[]): number {
+  for (let i = 0; i < lines.length; i++) {
+    const heading = TRIAGE_HEADING_RE.exec(lines[i]);
+    if (!heading) continue;
+    const level = heading[1].length;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = /^(#{1,6})\s/.exec(lines[j]);
+      if (next && next[1].length <= level) {
+        end = j;
+        break;
+      }
+    }
+    // Back up over the blank line(s) before the next heading so the task joins
+    // the section rather than floating in the gap below it.
+    while (end > i + 1 && lines[end - 1].trim() === "") end--;
+    return end;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trimStart().startsWith("```")) {
+      let j = i;
+      while (j > 0 && lines[j - 1].trim() === "") j--;
+      return j;
+    }
+  }
+
+  return -1;
+}
+
+/** Insert an already-formed task line at the right place in `content`. */
+export function buildInsertedContent(content: string, line: string): string {
+  const lines = content.split("\n");
+  const at = insertIndexFor(lines);
+  if (at < 0) return appendRawLine(content, line);
+  lines.splice(at, 0, line);
+  return `${lines.join("\n").replace(/\n+$/, "")}\n`;
+}
+
+/**
+ * Insert a *kept* line — one promoted out of the inbox — into `content`.
+ *
+ * Same placement rules as buildInsertedContent, with one addition: if the file
+ * has no triage heading at all, write one. Without it a kept task appends to
+ * the foot of the file, which in a tracker that ends in `### Later` (an
+ * OmniFocus import section) files it under a heading that lies about it. One
+ * `## Kept` heading, created once, makes the destination honest and is then
+ * found by every later Keep.
+ */
+export function buildKeptContent(content: string, line: string): string {
+  const lines = content.split("\n");
+  if (lines.some((l) => TRIAGE_HEADING_RE.test(l))) {
+    return buildInsertedContent(content, line);
+  }
+
+  if (insertIndexFor(lines) < 0) {
+    const sep = content.trim() ? "\n" : "";
+    return appendRawLine(content, `${sep}## Kept\n\n${line}`);
+  }
+
+  const at = insertIndexFor(lines);
+  const block = ["## Kept", "", line, ""];
+  if (at > 0 && lines[at - 1].trim() !== "") block.unshift("");
+  lines.splice(at, 0, ...block);
+  return `${lines.join("\n").replace(/\n+$/, "")}\n`;
 }
 
 /** Create the managed file (and any missing parent folders) if absent. */
@@ -415,15 +521,79 @@ export async function appendTask(
   if (!trimmed) throw new StaleTaskError("Task title is empty.");
 
   const file = await ensureManagedFile(app, path);
-  const vault = app.vault as any;
-  if (typeof vault.process === "function") {
-    await vault.process(file, (content: string) =>
-      buildAppendedContent(content, trimmed)
+  await processFile(app, file, (content) =>
+    buildInsertedContent(content, `- [ ] ${trimmed}`)
+  );
+}
+
+// --- Triage: keep and drop -----------------------------------------------
+//
+// The two verbs the Inbox bucket needs. Keep promotes a capture into the
+// working list; Drop lets it go. Both are deliberately *not* deletions: the
+// Stream id on the line is what stops the ingest bridge re-creating the task
+// fifteen minutes later, so a dropped item has to stay on disk, visibly dead,
+// rather than vanish and come straight back.
+
+/**
+ * Move a task's line out of its file and into `targetPath`.
+ *
+ * Insert first, remove second. That ordering is chosen for its failure mode:
+ * if the second write fails the task exists in both files — visible, obvious,
+ * and fixable by hand — whereas removing first would risk losing the line
+ * outright. The source line is verified *before* either write, so the common
+ * stale case fails with nothing written at all.
+ *
+ * The whole line moves verbatim, inline fields included. That matters beyond
+ * tidiness: `[stream:: <uuid>]` is the ingest bridge's dedupe key, and it
+ * searches both files, so a kept task stays ingested forever.
+ */
+export async function moveTaskLine(
+  app: App,
+  task: SmartTask,
+  targetPath: string
+): Promise<void> {
+  if (samePath(task.filePath, targetPath)) return; // already where it's going
+
+  const source = getFile(app, task.filePath);
+  const content = await app.vault.read(source);
+  locateTaskLine(content.split("\n"), task); // throws before anything is written
+
+  const target = await ensureManagedFile(app, targetPath);
+  await processFile(app, target, (c) => buildKeptContent(c, task.rawText));
+
+  try {
+    await processFile(app, source, (c) => {
+      const lines = c.split("\n");
+      lines.splice(locateTaskLine(lines, task), 1);
+      return lines.join("\n");
+    });
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    throw new StaleTaskError(
+      `Copied into ${targetPath}, but couldn't remove it from ${task.filePath} — ` +
+        `it's now in both files. Delete one by hand. (${why})`
     );
-  } else {
-    const content = await app.vault.read(file);
-    await app.vault.modify(file, buildAppendedContent(content, trimmed));
   }
+}
+
+/**
+ * Mark a capture as let go, in place.
+ *
+ * Written as a completed line plus `[dropped:: <date>]` rather than deleted,
+ * for two reasons: the `[stream:: …]` id has to survive or the bridge re-adds
+ * the task on its next pass, and a dropped decision you can see (and undo by
+ * unticking the box) beats one that silently removed a line from a note.
+ */
+export function buildDroppedLine(task: SmartTask): string {
+  return setInlineField(
+    buildToggledLine(task, true),
+    "dropped",
+    formatDate(startOfToday())
+  );
+}
+
+export async function dropTask(app: App, task: SmartTask): Promise<void> {
+  await replaceTaskLine(app, task, buildDroppedLine(task));
 }
 
 /** Surface write failures instead of swallowing them into a silent no-op. */

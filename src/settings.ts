@@ -105,6 +105,58 @@ export class SmartTodoSettingTab extends PluginSettingTab {
         })
       );
 
+    // The inbox is a *triage* boundary, not just a second file. Open tasks
+    // here are pulled out of the main list entirely and shown in their own
+    // bucket with Keep / Edit / Drop — so a voice capture lands somewhere
+    // visible and gets a decision, instead of silently joining forty others.
+    new Setting(el)
+      .setName("Inbox file")
+      .setDesc(
+        "Optional. Open tasks in this file are treated as untriaged captures: " +
+          "they show in an Inbox bucket at the top of the panel and nowhere " +
+          `else. Keep moves one into ${primaryManagedFile(this.plugin.scope)}. ` +
+          "Leave blank to turn the Inbox off."
+      )
+      .addText((text) => {
+        text
+          .setPlaceholder("Task inbox.md")
+          .setValue(this.plugin.settings.inboxFile)
+          .onChange(async (value) => {
+            this.plugin.settings.inboxFile = value;
+            await this.plugin.saveSettings();
+            renderInboxWarning();
+            this.plugin.refreshViews();
+          });
+        text.inputEl.addClass("smart-todo-scope-input");
+      });
+
+    // A path outside the managed scope is never scanned, so the Inbox would
+    // sit permanently empty with no hint as to why. Say it, and offer the fix.
+    const inboxWarning = el.createDiv();
+    const renderInboxWarning = (): void => {
+      inboxWarning.empty();
+      if (!this.plugin.inboxOutOfScope) return;
+      const path = this.plugin.inboxPath!;
+      inboxWarning.createDiv({
+        cls: "setting-item-description",
+        text:
+          `⚠ ${path} isn't in the managed scope above, so it's never scanned — ` +
+          "the Inbox will stay empty.",
+      });
+      new Setting(inboxWarning)
+        .setName("Add the inbox to managed files")
+        .addButton((btn) =>
+          btn.setButtonText("Add to scope").onClick(async () => {
+            const current = this.plugin.settings.managedFiles.trim();
+            this.plugin.settings.managedFiles = current ? `${current}, ${path}` : path;
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+            this.display();
+          })
+        );
+    };
+    renderInboxWarning();
+
     el.createEl("h3", { text: "Display" });
 
     // The accent is a colour, so the control is the colour — a dropdown of
