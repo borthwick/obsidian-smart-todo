@@ -12,6 +12,7 @@
 
 import { App, Modal, setIcon } from "obsidian";
 import { formatDuration } from "./filters";
+import { displayTitle } from "./parser";
 import {
   CATEGORY_COLOR,
   CATEGORY_LABEL,
@@ -139,7 +140,7 @@ export class SweepModal extends Modal {
       text: `Quick win ${this.index + 1} of ${this.queue.length}`,
     });
 
-    this.bodyEl.createDiv({ cls: "stw-sweep-title", text: task.title || "(untitled task)" });
+    this.bodyEl.createDiv({ cls: "stw-sweep-title", text: displayTitle(task.title) || "(untitled task)" });
 
     const chips = this.bodyEl.createDiv({ cls: "stw-sweep-chips" });
     const cat = categoryFor(task.project);

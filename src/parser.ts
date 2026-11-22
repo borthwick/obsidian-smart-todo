@@ -131,6 +131,31 @@ export function deriveTitle(body: string): string {
 }
 
 /**
+ * The title as it should *read* in a narrow panel.
+ *
+ * Display only — `title` keeps the original text, and nothing written back to
+ * disk goes through this. Tracked project notes are the reason: prose notes
+ * use bold, links and wikilinks freely, so a shopping list row arrives as
+ * `**Propane — full 20 lb tank** (none visible in photos; fill now)` and
+ * renders with the asterisks showing. Markers are unwrapped rather than
+ * deleted, so no words are lost.
+ */
+export function displayTitle(title: string): string {
+  return title
+    .replace(/!?\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2") // [[path|alias]] → alias
+    .replace(/!?\[\[([^\]]+)\]\]/g, "$1") // [[page]] → page
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // [text](url) → text
+    .replace(/\*\*\*([^*]+)\*\*\*/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/==([^=]+)==/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Parse one line into a SmartTask, or null if the line isn't a task.
  * `filePath` / `lineNumber` are passed through for write-back addressing.
  */

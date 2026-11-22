@@ -331,6 +331,9 @@ function extractInlineFields(text) {
 function deriveTitle(body) {
   return body.replace(new RegExp(INLINE_FIELD_RE.source, "g"), "").replace(EMOJI_DATE_TOKEN_RE, "").replace(RECURRENCE_TOKEN_RE, "").replace(PRIORITY_EMOJI_RE, "").replace(/\s+/g, " ").trim();
 }
+function displayTitle(title) {
+  return title.replace(/!?\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/!?\[\[([^\]]+)\]\]/g, "$1").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*\*([^*]+)\*\*\*/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2").replace(/__([^_]+)__/g, "$1").replace(/==([^=]+)==/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\s+/g, " ").trim();
+}
 function parseTaskLine(line, filePath, lineNumber) {
   const m = TASK_LINE_RE.exec(line);
   if (!m)
@@ -1638,7 +1641,7 @@ var SweepModal = class extends import_obsidian5.Modal {
     badge.createSpan({
       text: `Quick win ${this.index + 1} of ${this.queue.length}`
     });
-    this.bodyEl.createDiv({ cls: "stw-sweep-title", text: task.title || "(untitled task)" });
+    this.bodyEl.createDiv({ cls: "stw-sweep-title", text: displayTitle(task.title) || "(untitled task)" });
     const chips = this.bodyEl.createDiv({ cls: "stw-sweep-chips" });
     const cat = categoryFor(task.project);
     if (cat) {
@@ -2168,6 +2171,36 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       this.renderSweep(tasks, today);
     else
       this.renderFocus(tasks, today);
+    this.renderUndatedHint();
+  }
+  /**
+   * Say what the When filter is holding back.
+   *
+   * Today and This Week both require a due date, so a task with no date is
+   * invisible in either — and because the list isn't *empty*, the empty state
+   * never gets a chance to explain. That's how tracking a project note can
+   * report "10 open tasks" and show you nothing: a shopping list has no due
+   * dates. The count is only drawn when something is actually hidden, so it
+   * stays silent on a fully dated list.
+   */
+  renderUndatedHint() {
+    if (this.horizon !== "today" && this.horizon !== "week")
+      return;
+    const hidden = this.listTasks.filter(
+      (t) => t.status === "open" && !t.due && !isResting(t) && matchesCategory(t, this.category) && fitsBudget(t, this.budget)
+    ).length;
+    if (hidden === 0)
+      return;
+    const hint = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    hint.createSpan({
+      text: `${hidden} undated task${hidden === 1 ? "" : "s"} hidden \u2014 ${this.horizon === "today" ? "Today" : "This week"} only shows work with a date.`
+    });
+    const btn = hint.createEl("button", { cls: "stw-undated-btn", text: "Show all" });
+    btn.addEventListener("click", () => {
+      this.horizon = "all";
+      this.renderFilters();
+      void this.refresh();
+    });
   }
   // --- Inbox ---------------------------------------------------------------
   //
@@ -2213,7 +2246,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     const row = parent.createDiv({ cls: "stw-inbox-row" });
     const titleEl = row.createDiv({
       cls: "stw-task-title",
-      text: task.title || "(untitled capture)"
+      text: displayTitle(task.title) || "(untitled capture)"
     });
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
     titleEl.addEventListener("click", () => this.openEditor(task));
@@ -2283,6 +2316,25 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
         });
       }
       return;
+    }
+    if (this.horizon === "today" || this.horizon === "week") {
+      const undated = this.listTasks.filter(
+        (t) => t.status === "open" && !t.due && matchesCategory(t, this.category)
+      ).length;
+      if (undated > 0) {
+        empty.createDiv({ cls: "stw-empty-head", text: "Nothing dated for that window." });
+        empty.createDiv({
+          cls: "stw-empty-note",
+          text: `${undated} open task${undated === 1 ? " has" : "s have"} no due date, so ${undated === 1 ? "it doesn't" : "they don't"} show under ${this.horizon === "today" ? "Today" : "This week"}.`
+        });
+        const btn = empty.createEl("button", { cls: "stw-btn", text: "Show all" });
+        btn.addEventListener("click", () => {
+          this.horizon = "all";
+          this.renderFilters();
+          void this.refresh();
+        });
+        return;
+      }
     }
     empty.createDiv({ cls: "stw-empty-head", text: "Nothing here. Clear." });
   }
@@ -2481,7 +2533,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     const main = row.createDiv({ cls: "stw-task-main" });
     const titleEl = main.createDiv({
       cls: "stw-task-title",
-      text: task.title || "(untitled task)"
+      text: displayTitle(task.title) || "(untitled task)"
     });
     titleEl.addEventListener("click", () => this.openEditor(task));
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
@@ -2967,10 +3019,20 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       new import_obsidian9.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
       return;
     }
+    const undated = open.filter((t) => !t.due).length;
     const unsized = open.filter((t) => !t.effort).length;
+    const caveats = [];
+    if (undated === open.length)
+      caveats.push("none are dated, so set When \u2192 All to see them");
+    else if (undated > 0)
+      caveats.push(`${undated} undated (hidden under Today)`);
+    if (unsized === open.length)
+      caveats.push("none are sized, so they only show under the Any budget");
+    else if (unsized > 0)
+      caveats.push(`${unsized} unsized`);
     new import_obsidian9.Notice(
-      `Smart ToDo: tracking ${name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.` + (unsized > 0 ? ` ${unsized} unsized, so size them to see them under a time budget.` : ""),
-      6e3
+      `Smart ToDo: tracking ${name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.` + (caveats.length > 0 ? ` ${caveats.join("; ")}.` : ""),
+      8e3
     );
   }
   /** The managed scope as currently configured. */

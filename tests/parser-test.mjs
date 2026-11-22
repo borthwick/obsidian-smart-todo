@@ -702,6 +702,48 @@ check("file path recorded for the source chip", turkeyTasks[0].filePath, TURKEY)
 check("in scope once tracked", mod.scope.isInScope(TURKEY, parseScope(widened)), true);
 check("out of scope once untracked", mod.scope.isInScope(TURKEY, parseScope(commaScope)), false);
 
+// ======================================================================
+// 0.9.2 — why a tracked project note looked empty, and how prose reads.
+// ======================================================================
+
+const { matchesHorizon } = mod.filters;
+const { displayTitle } = mod;
+
+console.log("\n[matchesHorizon — Today and This week need a date]");
+const undatedOpen = parseTasksFromContent("- [ ] Buy peanut oil", TURKEY)[0];
+check("undated is hidden by Today", matchesHorizon(undatedOpen, "today"), false);
+check("undated is hidden by This week", matchesHorizon(undatedOpen, "week"), false);
+check("undated shows under All — the fix John needs", matchesHorizon(undatedOpen, "all"), true);
+check("undated is not Done", matchesHorizon(undatedOpen, "done"), false);
+const datedToday = parseTasksFromContent(`- [ ] Call the propane place 📅 ${formatDate(new Date())}`, TURKEY)[0];
+check("dated today shows under Today", matchesHorizon(datedToday, "today"), true);
+// All ten open tasks on the real turkey note are undated — which is exactly
+// how "tracking it, 10 open tasks" produced a panel with nothing new in it.
+const turkeyOpen = turkeyTasks.filter((t) => t.status === "open");
+check("none of the tracked note's open tasks are dated", turkeyOpen.filter((t) => t.due).length, 0);
+check("so Today shows none of them", turkeyOpen.filter((t) => matchesHorizon(t, "today")).length, 0);
+check("and All shows all of them", turkeyOpen.filter((t) => matchesHorizon(t, "all")).length, turkeyOpen.length);
+
+console.log("\n[displayTitle — prose notes render as prose, on screen only]");
+check("bold unwrapped, not deleted", displayTitle("**Propane — full 20 lb tank** (fill now)"), "Propane — full 20 lb tank (fill now)");
+check("italic", displayTitle("Pat the bird *bone-dry*"), "Pat the bird bone-dry");
+check("bold-italic", displayTitle("***Never*** water on an oil fire"), "Never water on an oil fire");
+check("underscore bold", displayTitle("__Thaw__ the turkey"), "Thaw the turkey");
+check("highlight", displayTitle("==Inject== 12–24h ahead"), "Inject 12–24h ahead");
+check("code span", displayTitle("run `npm run build`"), "run npm run build");
+check("wikilink with alias keeps the alias", displayTitle("Our take on [[Alton Brown's Roast Turkey|Alton Brown]]"), "Our take on Alton Brown");
+check("bare wikilink keeps the page name", displayTitle("See [[Turkey Fry Prep]]"), "See Turkey Fry Prep");
+check("markdown link keeps the text", displayTitle("See [the docs](https://example.com)"), "See the docs");
+check("plain text untouched", displayTitle("Refill the propane tank"), "Refill the propane tank");
+check("an asterisk that isn't emphasis survives", displayTitle("2 * 3 tanks"), "2 * 3 tanks");
+check("empty stays empty", displayTitle(""), "");
+// The stored line must never be rewritten by a display concern — that's how
+// you lose text. Display is derived; rawText is authority.
+const boldTask = parseTasksFromContent("- [ ] **Propane** [effort:: light]", TURKEY)[0];
+check("rawText keeps its markdown", boldTask.rawText, "- [ ] **Propane** [effort:: light]");
+check("title keeps its markdown too", boldTask.title, "**Propane**");
+check("only the display form is stripped", displayTitle(boldTask.title), "Propane");
+
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`
 );

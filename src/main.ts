@@ -235,11 +235,23 @@ export default class SmartTodoPlugin extends Plugin {
       new Notice(`Smart ToDo: tracking ${name} — no open tasks in it yet.`, 5000);
       return;
     }
+    // Count what the *current filters* will actually show. A project note is
+    // the worst case for this: a shopping list has no due dates and no sizes,
+    // so Today hides all of it and every budget but Any hides all of it —
+    // and the panel isn't empty, so nothing on screen explains the gap. Say
+    // it here rather than leaving him hunting a list he was just promised.
+    const undated = open.filter((t) => !t.due).length;
     const unsized = open.filter((t) => !t.effort).length;
+    const caveats: string[] = [];
+    if (undated === open.length) caveats.push("none are dated, so set When → All to see them");
+    else if (undated > 0) caveats.push(`${undated} undated (hidden under Today)`);
+    if (unsized === open.length) caveats.push("none are sized, so they only show under the Any budget");
+    else if (unsized > 0) caveats.push(`${unsized} unsized`);
+
     new Notice(
       `Smart ToDo: tracking ${name} — ${open.length} open task${open.length === 1 ? "" : "s"}.` +
-        (unsized > 0 ? ` ${unsized} unsized, so size them to see them under a time budget.` : ""),
-      6000
+        (caveats.length > 0 ? ` ${caveats.join("; ")}.` : ""),
+      8000
     );
   }
 

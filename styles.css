@@ -524,6 +524,34 @@
   color: var(--text-muted);
 }
 
+/* "N undated tasks hidden" — drawn under a non-empty list, so it has to be
+   quiet enough not to compete with the tasks and reachable enough to act on. */
+.stw-undated-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: var(--size-4-3);
+  padding: var(--size-2-3) var(--size-4-2);
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+.stw-undated-btn {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--stw-accent) 40%, transparent);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--stw-accent) 10%, transparent);
+  color: var(--stw-accent);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+.stw-undated-btn:hover {
+  background: var(--stw-accent);
+  color: #fff;
+}
+
 /* Source of a task pulled in from a tracked project note. Quieter than the
    category chip — it's provenance, not a decision you need to make. */
 .stw-source-chip {

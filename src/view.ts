@@ -33,7 +33,7 @@ import {
   quadrantOf,
   selectTasks,
 } from "./filters";
-import { addDays, formatDate, isSameDay, startOfToday } from "./parser";
+import { addDays, displayTitle, formatDate, isSameDay, startOfToday } from "./parser";
 import { describeScope, samePath } from "./scope";
 import {
   BUDGETS,
@@ -494,6 +494,46 @@ export class SmartTodoView extends ItemView {
     if (this.mode === "lanes") this.renderLanes(tasks, today);
     else if (this.mode === "sweep") this.renderSweep(tasks, today);
     else this.renderFocus(tasks, today);
+
+    this.renderUndatedHint();
+  }
+
+  /**
+   * Say what the When filter is holding back.
+   *
+   * Today and This Week both require a due date, so a task with no date is
+   * invisible in either — and because the list isn't *empty*, the empty state
+   * never gets a chance to explain. That's how tracking a project note can
+   * report "10 open tasks" and show you nothing: a shopping list has no due
+   * dates. The count is only drawn when something is actually hidden, so it
+   * stays silent on a fully dated list.
+   */
+  private renderUndatedHint(): void {
+    if (this.horizon !== "today" && this.horizon !== "week") return;
+
+    const hidden = this.listTasks.filter(
+      (t) =>
+        t.status === "open" &&
+        !t.due &&
+        !isResting(t) &&
+        matchesCategory(t, this.category) &&
+        fitsBudget(t, this.budget)
+    ).length;
+    if (hidden === 0) return;
+
+    const hint = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    hint.createSpan({
+      text: `${hidden} undated task${hidden === 1 ? "" : "s"} hidden — ${
+        this.horizon === "today" ? "Today" : "This week"
+      } only shows work with a date.`,
+    });
+    const btn = hint.createEl("button", { cls: "stw-undated-btn", text: "Show all" });
+    btn.addEventListener("click", () => {
+      this.horizon = "all";
+      // Repaint the When button too, or it keeps claiming "Today".
+      this.renderFilters();
+      void this.refresh();
+    });
   }
 
   // --- Inbox ---------------------------------------------------------------
@@ -547,7 +587,7 @@ export class SmartTodoView extends ItemView {
 
     const titleEl = row.createDiv({
       cls: "stw-task-title",
-      text: task.title || "(untitled capture)",
+      text: displayTitle(task.title) || "(untitled capture)",
     });
     titleEl.setAttr("title", `Click to edit · ${task.filePath}:${task.lineNumber + 1}`);
     titleEl.addEventListener("click", () => this.openEditor(task));
@@ -632,6 +672,31 @@ export class SmartTodoView extends ItemView {
         });
       }
       return;
+    }
+
+    // Dated-only horizons with undated work waiting: the same trap as the
+    // budget filter above, and worth the same honest answer rather than a
+    // congratulatory "Clear."
+    if (this.horizon === "today" || this.horizon === "week") {
+      const undated = this.listTasks.filter(
+        (t) => t.status === "open" && !t.due && matchesCategory(t, this.category)
+      ).length;
+      if (undated > 0) {
+        empty.createDiv({ cls: "stw-empty-head", text: "Nothing dated for that window." });
+        empty.createDiv({
+          cls: "stw-empty-note",
+          text: `${undated} open task${undated === 1 ? " has" : "s have"} no due date, so ${
+            undated === 1 ? "it doesn't" : "they don't"
+          } show under ${this.horizon === "today" ? "Today" : "This week"}.`,
+        });
+        const btn = empty.createEl("button", { cls: "stw-btn", text: "Show all" });
+        btn.addEventListener("click", () => {
+          this.horizon = "all";
+          this.renderFilters();
+          void this.refresh();
+        });
+        return;
+      }
     }
 
     empty.createDiv({ cls: "stw-empty-head", text: "Nothing here. Clear." });
@@ -851,7 +916,7 @@ export class SmartTodoView extends ItemView {
 
     const titleEl = main.createDiv({
       cls: "stw-task-title",
-      text: task.title || "(untitled task)",
+      text: displayTitle(task.title) || "(untitled task)",
     });
     titleEl.addEventListener("click", () => this.openEditor(task));
     titleEl.setAttr("title", `Click to edit · ${task.filePath}:${task.lineNumber + 1}`);
