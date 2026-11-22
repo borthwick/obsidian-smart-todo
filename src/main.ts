@@ -269,10 +269,18 @@ export default class SmartTodoPlugin extends Plugin {
     return primaryManagedFile(this.scope);
   }
 
-  /** The configured capture file, or null when there's no inbox. */
+  /**
+   * The configured capture file, or null when there's no inbox.
+   *
+   * `.md` is supplied when it's missing. Obsidian shows note names without the
+   * extension everywhere, so typing the path you can see gets you
+   * "…/Task inbox" — which matched nothing, left the Inbox bucket silently
+   * empty, and looked exactly like the setting hadn't saved.
+   */
   get inboxPath(): string | null {
     const raw = this.settings.inboxFile?.trim();
-    return raw ? raw : null;
+    if (!raw) return null;
+    return /\.[a-z0-9]+$/i.test(raw) ? raw : `${raw}.md`;
   }
 
   /**
