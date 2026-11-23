@@ -203,10 +203,16 @@ console.log(`  pushed: ${pushed.trim()}`);
 // marta is overdue (📅 2026-11-04). The old behaviour added a day to that
 // stale date, which left the task overdue, urgent, and still in Do First —
 // a push that visibly did nothing. It has to land tomorrow instead.
-check("overdue task pushes to tomorrow, not stale-date + 1", pushed.includes(`📅 ${inDays(1)}`), true);
+check("overdue task pushes to tomorrow, not stale-date + 1", pushed.includes(`[due:: ${inDays(1)}]`), true);
 check("pushes incremented 1→2", /\[pushes:: 2\]/.test(pushed), true);
-check("defer follows the due date", pushed.includes(`⏳ ${inDays(1)}`), true);
+check("defer follows the due date", pushed.includes(`[defer:: ${inDays(1)}]`), true);
 check("stale defer is replaced, not kept", /⏳ 2026-11-01/.test(pushed), false);
+// 0.11: the line came in with emoji dates and leaves with words. Converting on
+// touch is the whole migration plan — no sweep over the vault, just the lines
+// being worked on cleaning themselves up. Leaving both notations behind would
+// be the actual bug: two dates, one line, parser left to arbitrate.
+check("the emoji due date is retired, not duplicated", /📅/.test(pushed), false);
+check("and so is the emoji defer", /⏳/.test(pushed), false);
 
 // The point of the defer: a pushed task leaves the urgent axis, so it drops
 // out of Do First and into Schedule, and returns on its own.
@@ -229,7 +235,7 @@ check("still in This week", mod.filters.matchesHorizon(pushedTask, "week", REAL_
 check("out of Today, which is the whole point", mod.filters.matchesHorizon(pushedTask, "today", REAL_TODAY), false);
 
 const pushedTwo = buildPushedLine(marta, 2);
-check("push by 2 days lands 2 days out", pushedTwo.includes(`📅 ${inDays(2)}`), true);
+check("push by 2 days lands 2 days out", pushedTwo.includes(`[due:: ${inDays(2)}]`), true);
 check("a 2-day push isn't urgent either", mod.filters.isUrgent(parseTasksFromContent(pushedTwo, "Tasks.md")[0], REAL_TODAY), false);
 
 // A future due date is a real plan, so push moves it relative to itself.
@@ -237,24 +243,25 @@ const future = parseTasksFromContent(
   `- [ ] Future thing 📅 ${inDays(10)} [important:: true]`,
   "Tasks.md"
 )[0];
-check("future due date pushes from itself", buildPushedLine(future, 1).includes(`📅 ${inDays(11)}`), true);
+check("future due date pushes from itself", buildPushedLine(future, 1).includes(`[due:: ${inDays(11)}]`), true);
 
 const noPushes = tasks.find((t) => t.title.startsWith("Review the Q4"));
 const pushedNew = buildPushedLine(noPushes, 1);
 console.log(`  pushed (no due, no defer, no pushes field): ${pushedNew.trim()}`);
 check("pushes field appended as 1", /\[pushes:: 1\]/.test(pushedNew), true);
-check("undated task gets a due date", pushedNew.includes(`📅 ${inDays(1)}`), true);
+check("undated task gets a due date", pushedNew.includes(`[due:: ${inDays(1)}]`), true);
 
 // A deferred-but-undated task has no deadline, and a push shouldn't invent one.
 const deferOnly = parseTasksFromContent("- [ ] Someday thing ⏳ 2026-01-01", "Tasks.md")[0];
 const pushedDeferOnly = buildPushedLine(deferOnly, 1);
-check("defer-only task still has no due date", /📅/.test(pushedDeferOnly), false);
-check("defer-only task's rest restarts from today", pushedDeferOnly.includes(`⏳ ${inDays(1)}`), true);
+check("defer-only task still has no due date", /📅|due::/.test(pushedDeferOnly), false);
+check("defer-only task's rest restarts from today", pushedDeferOnly.includes(`[defer:: ${inDays(1)}]`), true);
 
 const doneLine = buildToggledLine(marta, true);
 console.log(`  completed: ${doneLine.trim()}`);
 check("checkbox flipped to [x]", /^- \[x\]/.test(doneLine.trim()), true);
-check("✅ stamped with today", doneLine.includes(`✅ ${formatDate(new Date())}`), true);
+check("done date stamped with today", doneLine.includes(`[done:: ${formatDate(new Date())}]`), true);
+check("in words, not ✅", /✅/.test(doneLine), false);
 
 const undone = buildToggledLine(
   tasks.find((t) => t.title.startsWith("Book the")),
@@ -580,7 +587,10 @@ check("no fields → line unchanged", buildPatchedLine(rich, {}), RICH);
 console.log("\n[clearing fields]");
 const cleared = buildPatchedLine(rich, { due: null, effort: null, important: null, project: null });
 console.log(`  ${cleared}`);
+// Clearing has to clear both notations, or the field goes and the emoji the
+// line arrived with quietly becomes the due date again.
 check("due removed", /📅/.test(cleared), false);
+check("in both notations", /due::/.test(cleared), false);
 check("effort removed", /effort::/.test(cleared), false);
 check("important removed", /important::/.test(cleared), false);
 check("project removed", /project::/.test(cleared), false);
@@ -1060,6 +1070,223 @@ console.log("\n[tracked notes fold under their own heading]");
     "Tasks.md"
   );
   check("next week's page is not tracked by today's expansion", scopeIncludesPath(raw, "2. Day Planners/Weeks/Week 49 of 2026.md", { today: NOV22 }), false);
+}
+
+// ======================================================================
+// 0.11 — one vocabulary. Plain `[word:: value]` is what gets written; emoji
+// stays readable forever, because the week page and the OmniFocus import are
+// full of it and a line the parser can't read is a task that disappears.
+// ======================================================================
+
+{
+  console.log("\n[0.11 vocabulary — words are read as well as emoji]");
+
+  const words = parseTasksFromContent(
+    "- [ ] Call the propane place [due:: 2026-11-28] [defer:: 2026-11-25]",
+    "Tasks.md"
+  )[0];
+  check("[due::] read", d(words.due), "2026-11-28");
+  check("[defer::] read", d(words.defer), "2026-11-25");
+  check("fields never leak into the title", words.title, "Call the propane place");
+
+  const emoji = parseTasksFromContent(
+    "- [ ] Call the propane place 📅 2026-11-28 ⏳ 2026-11-25",
+    "Tasks.md"
+  )[0];
+  check("emoji still read", d(emoji.due), "2026-11-28");
+  check("emoji defer still read", d(emoji.defer), "2026-11-25");
+
+  // A half-converted line is the realistic case: something wrote the field,
+  // the emoji is still sitting there. The field wins because it's the notation
+  // this version emits, so the most recent write is the one that counts.
+  const mixed = parseTasksFromContent(
+    "- [ ] Half-converted 📅 2026-11-20 [due:: 2026-11-28]",
+    "Tasks.md"
+  )[0];
+  check("the field wins over a leftover emoji", d(mixed.due), "2026-11-28");
+
+  const doneWords = parseTasksFromContent("- [x] Shipped it [done:: 2026-11-22]", "Tasks.md")[0];
+  check("[done::] read", d(doneWords.doneDate), "2026-11-22");
+
+  console.log("\n[0.11 — priority in words]");
+  for (const [word, expected] of [
+    ["highest", "highest"],
+    ["urgent", "highest"],
+    ["high", "high"],
+    ["normal", "medium"],
+    ["low", "low"],
+    ["lowest", "lowest"],
+  ]) {
+    check(
+      `[priority:: ${word}]`,
+      parseTasksFromContent(`- [ ] Thing [priority:: ${word}]`, "Tasks.md")[0].priority,
+      expected
+    );
+  }
+  check(
+    "⏫ still read",
+    parseTasksFromContent("- [ ] Thing ⏫", "Tasks.md")[0].priority,
+    "high"
+  );
+  check(
+    "the word beats the emoji on a mixed line",
+    parseTasksFromContent("- [ ] Thing ⏬ [priority:: high]", "Tasks.md")[0].priority,
+    "high"
+  );
+  check(
+    "nonsense priority is unjudged, not a crash",
+    parseTasksFromContent("- [ ] Thing [priority:: ASAP!!]", "Tasks.md")[0].priority,
+    null
+  );
+
+  // Morgen sends real estimates (PT30M), so effort has to accept a duration,
+  // not just the four bucket words. The bucket is a ceiling — 30m fits inside
+  // an hour, so it's heavy — and the number is kept alongside it, because
+  // throwing it away loses the only part Morgen actually said.
+  console.log("\n[0.11 — effort accepts durations, keeps the number]");
+  for (const [value, bucket, mins] of [
+    ["light", "light", null],
+    ["deep", "deep", null],
+    ["2m", "light", 2],
+    ["3 min", "light", 3],
+    ["10 minutes", "moderate", 10],
+    ["30m", "heavy", 30],
+    ["1h", "heavy", 60],
+    ["1.5 hours", "deep", 90],
+    ["2 hrs", "deep", 120],
+  ]) {
+    const t = parseTasksFromContent(`- [ ] Thing [effort:: ${value}]`, "Tasks.md")[0];
+    check(`[effort:: ${value}] → ${bucket}`, t.effort, bucket);
+    check(`  and keeps ${mins === null ? "no number" : `${mins}m`}`, t.effortMinutes, mins);
+  }
+  const junkEffort = parseTasksFromContent("- [ ] Thing [effort:: a while]", "Tasks.md")[0];
+  check("unparseable effort is null, not a wrong bucket", junkEffort.effort, null);
+  check("0m is not an effort", parseTasksFromContent("- [ ] Thing [effort:: 0m]", "Tasks.md")[0].effort, null);
+
+  // The round trip that matters: a line written by this version has to parse
+  // back to exactly what was asked for, with no emoji anywhere on it.
+  console.log("\n[0.11 — write/read round trip is emoji-free]");
+  const legacy = parseTasksFromContent(
+    "- [ ] Legacy line 📅 2026-11-04 ⏳ 2026-11-01 🔁 every week [pushes:: 1]",
+    "Tasks.md"
+  )[0];
+  const touched = mod.writer.buildPatchedLine(legacy, { due: new Date(2026, 10, 30) });
+  check("converted on touch", /\[due:: 2026-11-30\]/.test(touched), true);
+  check("no emoji due left", /📅/.test(touched), false);
+  check("the untouched emoji defer is left alone", /⏳ 2026-11-01/.test(touched), true);
+  check("recurrence is never ours to rewrite", /🔁 every week/.test(touched), true);
+  check("and it reads back", d(parseTasksFromContent(touched, "Tasks.md")[0].due), "2026-11-30");
+}
+
+// ======================================================================
+// 0.11 — the clean slate. One command draws a line under an imported
+// backlog: the lines move under `## Archive` and the panel stops seeing
+// them. It must never delete, and never mark anything done.
+// ======================================================================
+
+{
+  console.log("\n[0.11 archive — the section is invisible to the scan]");
+
+  const WITH_ARCHIVE = [
+    "# Tasks",
+    "",
+    "- [ ] Live task",
+    "",
+    "## Archive",
+    "",
+    "- [ ] Old thing [archived:: 2026-11-23]",
+    "- [ ] Another old thing",
+    "",
+    "## Later",
+    "",
+    "- [ ] Still live",
+  ].join("\n");
+
+  const seen = parseTasksFromContent(WITH_ARCHIVE, "Tasks.md");
+  check("archived tasks are not scanned", seen.length, 2);
+  check("the live one before it survives", seen[0].title, "Live task");
+  // The heading after the archive section has to end it, or everything below
+  // the sweep disappears forever — including next week's work.
+  check("a later heading re-opens the scan", seen[1].title, "Still live");
+  check("archive is not an inherited state", seen[1].heading, "Later");
+
+  console.log("\n[0.11 archive — the sweep moves, stamps, and deletes nothing]");
+
+  const { buildArchivedContent } = mod.writer;
+  const BACKLOG = [
+    "# Task tracker",
+    "",
+    "## Fund 4.0 Prep",
+    "",
+    "- [ ] Fund 4 build to 30M [important:: true]",
+    "    - [ ] Call the LPs",
+    "    - note: the deck is in Dropbox",
+    "- [x] Already done 📅 2026-10-01",
+    "",
+    "### Later",
+    "",
+    "- [ ] Someday thing [stream:: 7f3c-aa]",
+    "",
+    "```tasks",
+    "not done",
+    "```",
+  ].join("\n");
+
+  const openLines = parseTasksFromContent(BACKLOG, "T.md")
+    .filter((t) => t.status === "open")
+    .map((t) => t.lineNumber);
+  check("three open tasks to sweep", openLines.length, 3);
+
+  const swept = buildArchivedContent(BACKLOG, openLines, new Date(2026, 10, 23));
+  console.log(swept.content.split("\n").map((l) => `    ${l}`).join("\n"));
+
+  // The count is top-level items, not lines: the child moved as part of its
+  // parent's span, so claiming "3 archived" when the user sees two entries
+  // would be the dialog lying about what it did.
+  check("parent and its child counted once", swept.moved, 2);
+
+  const after = parseTasksFromContent(swept.content, "T.md");
+  check("the panel sees nothing left", after.filter((t) => t.status === "open").length, 0);
+  check("the completed line stays where it was", /## Fund 4\.0 Prep[\s\S]*- \[x\] Already done/.test(swept.content), true);
+
+  // Not deleted, not done — the two failure modes that would make this command
+  // unusable. Every open line is still on disk, still open.
+  check("nothing was deleted", /Fund 4 build to 30M/.test(swept.content), true);
+  check("the sub-task came with it", /Call the LPs/.test(swept.content), true);
+  check("so did its note bullet", /note: the deck is in Dropbox/.test(swept.content), true);
+  check("the stream id survives", /\[stream:: 7f3c-aa\]/.test(swept.content), true);
+  check("nothing was ticked", /- \[x\] Fund 4/.test(swept.content), false);
+  check("archived date stamped on the parent", /Fund 4 build to 30M.*\[archived:: 2026-11-23\]/.test(swept.content), true);
+  check("and on the child", /Call the LPs \[archived:: 2026-11-23\]/.test(swept.content), true);
+  check("but not on a prose bullet", /Dropbox \[archived/.test(swept.content), false);
+  check("one Archive heading", (swept.content.match(/^## Archive$/gm) || []).length, 1);
+  check("the fence is intact", /```tasks\nnot done\n```/.test(swept.content), true);
+  check("the fence stayed out of the archive", swept.content.indexOf("```tasks") < swept.content.indexOf("## Archive"), true);
+
+  // Running it again has to be a no-op, or a second invocation re-stamps and
+  // re-nests everything that already moved.
+  const again = buildArchivedContent(
+    swept.content,
+    parseTasksFromContent(swept.content, "T.md").filter((t) => t.status === "open").map((t) => t.lineNumber)
+  );
+  check("re-running moves nothing", again.moved, 0);
+  check("and changes nothing", again.content, swept.content);
+
+  // A file that already has an Archive section gets appended to, not given a
+  // second one.
+  const SECOND = ["## Archive", "", "- [ ] Old [archived:: 2026-11-01]", "", "## Now", "", "- [ ] New"].join("\n");
+  const secondSweep = buildArchivedContent(
+    SECOND,
+    parseTasksFromContent(SECOND, "T.md").filter((t) => t.status === "open").map((t) => t.lineNumber),
+    new Date(2026, 10, 23)
+  );
+  check("appends to the existing section", (secondSweep.content.match(/^## Archive$/gm) || []).length, 1);
+  check("the new item joined it", /- \[ \] New \[archived:: 2026-11-23\]/.test(secondSweep.content), true);
+  check("above the heading that followed", secondSweep.content.indexOf("- [ ] New") < secondSweep.content.indexOf("## Now"), true);
+  check("the earlier archived item is untouched", /- \[ \] Old \[archived:: 2026-11-01\]/.test(secondSweep.content), true);
+  check("and the file is clean again", parseTasksFromContent(secondSweep.content, "T.md").length, 0);
+
+  check("an empty sweep is a no-op", buildArchivedContent(BACKLOG, []).content, BACKLOG);
 }
 
 console.log(

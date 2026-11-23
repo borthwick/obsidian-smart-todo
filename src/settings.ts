@@ -307,6 +307,20 @@ export class SmartTodoSettingTab extends PluginSettingTab {
 
     el.createEl("h3", { text: "Display" });
 
+    new Setting(el)
+      .setName("Metadata as chips in the editor")
+      .setDesc(
+        "Show [due:: …], [effort:: …] and the legacy emoji as small chips while " +
+          "editing a note. Put the cursor on a line to see the raw text — " +
+          "nothing is hidden from editing, and the file on disk is unchanged."
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.metadataChips !== false).onChange(async (v) => {
+          this.plugin.settings.metadataChips = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
     // The accent is a colour, so the control is the colour — a dropdown of
     // colour *names* makes you click twice to see what you picked.
     const accentSetting = new Setting(el)

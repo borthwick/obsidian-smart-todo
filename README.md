@@ -14,26 +14,54 @@ files**, and a task is just a markdown list item.
 
 ## Storage model
 
-No database. A task is a markdown line, encoded the way the
-[Tasks](https://publish.obsidian.md/tasks/) plugin (emoji dates) and
-[Dataview](https://blacksmithgu.github.io/obsidian-dataview/) (inline
-`[key:: value]` fields) already encode it:
+No database. A task is a markdown line, encoded as
+[Dataview](https://blacksmithgu.github.io/obsidian-dataview/) inline
+`[key:: value]` fields:
 
 ```markdown
-- [ ] Draft the migration plan 📅 2026-11-04 ⏳ 2026-11-01 [effort:: heavy] [pushes:: 1] [project:: Platform]
+- [ ] Draft the migration plan [due:: 2026-11-04] [defer:: 2026-11-01] [effort:: 45m] [pushes:: 1] [project:: betaworks]
 ```
 
 | Token | Meaning |
 | --- | --- |
-| `📅 YYYY-MM-DD` | Due date |
-| `⏳ YYYY-MM-DD` | Defer — the task rests, hidden from Today, until this date |
-| `✅ YYYY-MM-DD` | Completion date, stamped when you tick the box |
-| `[effort:: light\|moderate\|heavy]` | How much capacity it needs |
+| `[due:: YYYY-MM-DD]` | Due date |
+| `[defer:: YYYY-MM-DD]` | Defer — the task rests, hidden from Today, until this date |
+| `[done:: YYYY-MM-DD]` | Completion date, stamped when you tick the box |
+| `[effort:: light\|moderate\|heavy\|deep]` | How much capacity it needs — or a duration (`30m`, `1h`), bucketed as a ceiling |
+| `[priority:: highest…lowest]` | Priority |
+| `[important:: true\|false]` | The Eisenhower judgment. Urgency is *never* stored — it's derived from the due date |
 | `[pushes:: n]` | How many times you've deferred it by a day |
-| `[project:: …]`, `[assigned:: …]` | Free-text grouping |
+| `[project:: …]`, `[assigned:: …]` | Grouping |
 
-Every task stays readable and editable with this plugin uninstalled, and your
-existing Tasks / Dataview queries keep working against the same lines.
+Every task stays readable and editable with this plugin uninstalled, and
+Dataview queries work against the same lines.
+
+### One vocabulary (0.11)
+
+Earlier versions wrote dates the way the
+[Tasks](https://publish.obsidian.md/tasks/) plugin does — `📅 2026-11-04 ⏳
+2026-11-01` — and everything else as inline fields, which meant two notations
+on one line and an emoji vocabulary (🔺⏫🔼🔽⏬, 📅⏳✅🛫➕❌) to memorise. It's
+now words only.
+
+Emoji is still **read**, permanently: a vault has months of pages and imports
+full of it, and a line the parser can't read is a task that silently
+disappears. Conversion happens per line, when that line is next touched. There
+is no migration sweep, and where both notations appear on one line the field
+wins, since that's the newer write.
+
+Plain fields are wider than emoji, so **Settings → Display → Metadata as chips**
+renders them as compact chips in Live Preview and reveals the literal text when
+the cursor enters the line. The file on disk is never affected by that setting.
+
+### `## Archive`
+
+Tasks under a heading starting with `Archive` are invisible to the plugin —
+still in the note, still greppable, just not live. **Archive every open task in
+this note** (command palette) sweeps a note's open items there in one pass,
+stamped `[archived:: date]`, children travelling with their parents. Nothing is
+deleted and nothing is marked done; an imported backlog you'll never do isn't
+work you completed.
 
 ## Managed scope
 

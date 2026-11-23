@@ -297,15 +297,18 @@ export function parseCapture(app: App, input: string): NlResult {
 
 /**
  * Compose the task body from a capture string: clean title plus the inline
- * encoding for whatever fields were parsed — `📅 due`, `⏳ defer`,
- * `[effort:: x]`, `[project:: x]`, `[assigned:: x]`. Order matches the design
- * doc so Tasks/Dataview read it cleanly.
+ * encoding for whatever fields were parsed — `[due:: date]`, `[defer:: date]`,
+ * `[effort:: x]`, `[project:: x]`, `[assigned:: x]`.
+ *
+ * All words as of 0.11: a quick capture is the one place a line is written
+ * from nothing, so it should come out in the notation the rest of the plugin
+ * now writes rather than needing a first touch to convert it.
  */
 export function buildCaptureBody(app: App, input: string): string {
   const { title, due, defer, effort, project, assigned } = parseCapture(app, input);
   let body = title;
-  if (due) body += ` 📅 ${formatDate(due)}`;
-  if (defer) body += ` ⏳ ${formatDate(defer)}`;
+  if (due) body += ` [due:: ${formatDate(due)}]`;
+  if (defer) body += ` [defer:: ${formatDate(defer)}]`;
   if (effort) body += ` [effort:: ${effort}]`;
   if (project) body += ` [project:: ${project}]`;
   if (assigned) body += ` [assigned:: ${assigned}]`;

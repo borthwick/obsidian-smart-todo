@@ -22,7 +22,7 @@ __export(main_exports, {
   default: () => SmartTodoPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 
 // src/types.ts
 var PRIORITY_MARK = {
@@ -141,7 +141,8 @@ var DEFAULT_SETTINGS = {
   weekTokensEnabled: true,
   weekStart: "sunday",
   importantHeadings: [...DEFAULT_IMPORTANT_HEADINGS],
-  groupByHeading: true
+  groupByHeading: true,
+  metadataChips: true
 };
 var CATEGORIES = ["betaworks", "personal", "health"];
 var CATEGORY_LABEL = {
@@ -329,6 +330,7 @@ var TASK_LINE_RE = /^(\s*)(?:[-*+]|\d+[.)])\s+\[(.)\]\s*(.*)$/;
 var DONE_MARKERS = /* @__PURE__ */ new Set(["x", "X"]);
 var CANCELLED_MARKERS = /* @__PURE__ */ new Set(["-"]);
 var HEADING_RE = /^(#{1,6})\s+(.*)$/;
+var ARCHIVE_HEADING_RE = /^archive\b/i;
 function cleanHeading(raw) {
   return displayTitle(
     raw.replace(/<[^>]+>/g, "").replace(/^#+\s*/, "").replace(/\s*#+\s*$/, "")
@@ -338,6 +340,15 @@ var DUE_RE = /📅\s*(\d{4}-\d{2}-\d{2})/;
 var DEFER_RE = /⏳\s*(\d{4}-\d{2}-\d{2})/;
 var DONE_DATE_RE = /✅\s*(\d{4}-\d{2}-\d{2})/;
 var INLINE_FIELD_RE = /\[([A-Za-z][\w-]*)\s*::\s*([^\]]*)\]/g;
+function readDate(fieldValue, emojiRe, body) {
+  if (fieldValue !== void 0) {
+    const fromField = parseDate(fieldValue.trim());
+    if (fromField)
+      return fromField;
+  }
+  const m = emojiRe.exec(body);
+  return m ? parseDate(m[1]) : null;
+}
 var EMOJI_DATE_TOKEN_RE = /(?:📅|⏳|✅|🛫|➕|❌)\s*\d{4}-\d{2}-\d{2}/g;
 var RECURRENCE_TOKEN_RE = /🔁[^[\]📅⏳✅🛫➕❌🔺⏫🔼🔽⏬]*/gu;
 var TASK_ID_TOKEN_RE = /(?:🆔|⛔)\s*[A-Za-z0-9]+(?:\s*,\s*[A-Za-z0-9]+)*/gu;
@@ -353,6 +364,19 @@ function parsePriority(body) {
   var _a;
   const m = new RegExp(PRIORITY_EMOJI_RE.source, "u").exec(body);
   return m ? (_a = PRIORITY_BY_EMOJI[m[0]]) != null ? _a : null : null;
+}
+var PRIORITY_WORDS = {
+  highest: "highest",
+  urgent: "highest",
+  high: "high",
+  medium: "medium",
+  normal: "medium",
+  low: "low",
+  lowest: "lowest"
+};
+function parsePriorityWord(value) {
+  var _a;
+  return (_a = PRIORITY_WORDS[value.trim().toLowerCase()]) != null ? _a : null;
 }
 function importanceFromPriority(p) {
   if (p === "highest" || p === "high" || p === "medium")
@@ -396,11 +420,33 @@ function addDays(date, days) {
 function isSameDay(a, b) {
   return !!a && !!b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
+var DURATION_RE = /^(\d+(?:\.\d+)?)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/;
+function parseMinutes(value) {
+  const m = DURATION_RE.exec(value.trim().toLowerCase());
+  if (!m)
+    return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0)
+    return null;
+  const hours = !!m[2] && m[2].startsWith("h");
+  const mins = Math.round(hours ? n * 60 : n);
+  return mins > 0 ? mins : null;
+}
+function effortFromMinutes(mins) {
+  if (mins <= 3)
+    return "light";
+  if (mins <= 15)
+    return "moderate";
+  if (mins <= 60)
+    return "heavy";
+  return "deep";
+}
 function normalizeEffort(value) {
   const v = value.trim().toLowerCase();
   if (v === "light" || v === "moderate" || v === "heavy" || v === "deep")
     return v;
-  return null;
+  const mins = parseMinutes(v);
+  return mins === null ? null : effortFromMinutes(mins);
 }
 function normalizeImportant(value) {
   const v = value.trim().toLowerCase();
@@ -426,7 +472,7 @@ function displayTitle(title) {
   return title.replace(/!?\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/!?\[\[([^\]]+)\]\]/g, "$1").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*\*([^*]+)\*\*\*/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2").replace(/__([^_]+)__/g, "$1").replace(/==([^=]+)==/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\s+/g, " ").trim();
 }
 function parseTaskLine(line, filePath, lineNumber, context = {}) {
-  var _a;
+  var _a, _b;
   const m = TASK_LINE_RE.exec(line);
   if (!m)
     return null;
@@ -434,13 +480,14 @@ function parseTaskLine(line, filePath, lineNumber, context = {}) {
   const checkbox = m[2];
   const body = m[3];
   const fields = extractInlineFields(body);
-  const dueMatch = DUE_RE.exec(body);
-  const deferMatch = DEFER_RE.exec(body);
-  const doneMatch = DONE_DATE_RE.exec(body);
+  const due = readDate(fields["due"], DUE_RE, body);
+  const defer = readDate(fields["defer"], DEFER_RE, body);
+  const doneDate = readDate(fields["done"], DONE_DATE_RE, body);
   const pushesRaw = fields["pushes"];
   const pushesParsed = pushesRaw === void 0 ? NaN : parseInt(pushesRaw, 10);
-  const priority = parsePriority(body);
-  const heading = (_a = context.heading) != null ? _a : null;
+  const priority = (_a = fields["priority"] !== void 0 ? parsePriorityWord(fields["priority"]) : null) != null ? _a : parsePriority(body);
+  const heading = (_b = context.heading) != null ? _b : null;
+  const effortMinutes = fields["effort"] !== void 0 ? parseMinutes(fields["effort"]) : null;
   let important = null;
   let importantFrom = null;
   if (fields["important"] !== void 0) {
@@ -471,11 +518,12 @@ function parseTaskLine(line, filePath, lineNumber, context = {}) {
     heading,
     priority,
     importantFrom,
-    due: dueMatch ? parseDate(dueMatch[1]) : null,
-    defer: deferMatch ? parseDate(deferMatch[1]) : null,
-    doneDate: doneMatch ? parseDate(doneMatch[1]) : null,
+    due,
+    defer,
+    doneDate,
     dropped: fields["dropped"] ? parseDate(fields["dropped"]) : null,
     effort: fields["effort"] ? normalizeEffort(fields["effort"]) : null,
+    effortMinutes,
     pushes: Number.isFinite(pushesParsed) && pushesParsed > 0 ? pushesParsed : 0,
     project: fields["project"] || null,
     assigned: fields["assigned"] || null,
@@ -488,6 +536,7 @@ function parseTasksFromContent(content, filePath, options = {}) {
   let heading = null;
   const ancestry = [];
   let inFence = false;
+  let archived = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (/^\s*(```|~~~)/.test(line)) {
@@ -500,8 +549,11 @@ function parseTasksFromContent(content, filePath, options = {}) {
     if (headingMatch) {
       heading = cleanHeading(headingMatch[2]) || null;
       ancestry.length = 0;
+      archived = ARCHIVE_HEADING_RE.test(heading != null ? heading : "");
       continue;
     }
+    if (archived)
+      continue;
     const task = parseTaskLine(lines[i], filePath, i, {
       heading,
       importantHeadings: options.importantHeadings
@@ -555,10 +607,238 @@ async function scanScope(app, scope, options = {}) {
   return all;
 }
 
-// src/settings.ts
+// src/metadata-chips.ts
+var import_state = require("@codemirror/state");
+var import_view = require("@codemirror/view");
+var CHIP_FIELDS = {
+  due: { label: "due", cls: "stw-chip-due" },
+  defer: { label: "defer", cls: "stw-chip-defer" },
+  done: { label: "done", cls: "stw-chip-done" },
+  dropped: { label: "dropped", cls: "stw-chip-done" },
+  effort: { label: "", cls: "stw-chip-effort" },
+  project: { label: "", cls: "stw-chip-project" },
+  priority: { label: "", cls: "stw-chip-priority" },
+  important: { label: "", cls: "stw-chip-important" },
+  pushes: { label: "", cls: "stw-chip-pushes" },
+  assigned: { label: "", cls: "stw-chip-assigned" }
+};
+var ID_FIELDS = /* @__PURE__ */ new Set(["stream", "morgen", "id", "blockedBy", "blocked-by"]);
+var FIELD_RE = /\[([A-Za-z][\w-]*)\s*::\s*([^\]]*)\]/g;
+var EMOJI_RE = /(📅|⏳|✅|🛫|➕|❌)\s*(\d{4}-\d{2}-\d{2})|(🔺|⏫|🔼|🔽|⏬)/gu;
+var EMOJI_FIELD = {
+  "\u{1F4C5}": "due",
+  "\u23F3": "defer",
+  "\u2705": "done",
+  "\u{1F6EB}": "start",
+  "\u2795": "added",
+  "\u274C": "cancelled"
+};
+var EMOJI_PRIORITY = {
+  "\u{1F53A}": "highest",
+  "\u23EB": "high",
+  "\u{1F53C}": "medium",
+  "\u{1F53D}": "low",
+  "\u23EC": "lowest"
+};
+function shortDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m)
+    return iso;
+  const date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(date.getTime()))
+    return iso;
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleDateString(void 0, {
+    month: "short",
+    day: "numeric",
+    ...sameYear ? {} : { year: "numeric" }
+  });
+}
+function fieldChip(key, value, raw) {
+  const lower = key.toLowerCase();
+  const v = value.trim();
+  if (ID_FIELDS.has(key) || ID_FIELDS.has(lower)) {
+    return { text: "", title: raw, cls: "stw-chip-id" };
+  }
+  const def = CHIP_FIELDS[lower];
+  if (!def)
+    return null;
+  if (lower === "important") {
+    const on = /^(true|yes|1)$/i.test(v);
+    return {
+      text: on ? "important" : "not important",
+      title: raw,
+      cls: on ? "stw-chip-important" : "stw-chip-unimportant"
+    };
+  }
+  if (lower === "pushes") {
+    return { text: `\u21BB${v}`, title: raw, cls: def.cls };
+  }
+  const isDate = /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const shown = isDate ? shortDate(v) : v;
+  return {
+    text: def.label ? `${def.label} ${shown}` : shown,
+    title: raw,
+    cls: def.cls
+  };
+}
+var ChipWidget = class extends import_view.WidgetType {
+  constructor(spec) {
+    super();
+    this.spec = spec;
+  }
+  /**
+   * Two chips are interchangeable when they'd render identically. CodeMirror
+   * reuses the DOM when this returns true, so without it every keystroke on
+   * the line rebuilds every chip on it.
+   */
+  eq(other) {
+    return other.spec.text === this.spec.text && other.spec.cls === this.spec.cls && other.spec.title === this.spec.title;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = `stw-chip ${this.spec.cls}`;
+    el.setAttr("title", this.spec.title);
+    if (this.spec.text) {
+      el.textContent = this.spec.text;
+    } else {
+      el.addClass("stw-chip-dot");
+    }
+    return el;
+  }
+  /**
+   * Let clicks through to the editor so clicking a chip puts the cursor on the
+   * line — which reveals the raw text. That's the whole interaction: click to
+   * see what's really there.
+   */
+  ignoreEvent() {
+    return false;
+  }
+};
+function chipsForLine(text, from, out) {
+  FIELD_RE.lastIndex = 0;
+  let m;
+  while (m = FIELD_RE.exec(text)) {
+    const spec = fieldChip(m[1], m[2], m[0]);
+    if (spec)
+      out.push({ start: from + m.index, end: from + m.index + m[0].length, spec });
+  }
+  EMOJI_RE.lastIndex = 0;
+  while (m = EMOJI_RE.exec(text)) {
+    const spec = m[3] ? { text: EMOJI_PRIORITY[m[3]], title: m[0], cls: "stw-chip-priority" } : {
+      text: `${EMOJI_FIELD[m[1]]} ${shortDate(m[2])}`,
+      title: m[0],
+      cls: `stw-chip-${EMOJI_FIELD[m[1]]}`
+    };
+    out.push({ start: from + m.index, end: from + m.index + m[0].length, spec });
+  }
+}
+var TASK_LINE_RE2 = /^\s*(?:[-*+]|\d+[.)])\s+\[.\]\s/;
+function buildDecorations(view) {
+  const builder = new import_state.RangeSetBuilder();
+  const sel = view.state.selection;
+  for (const { from, to } of view.visibleRanges) {
+    let pos = from;
+    while (pos <= to) {
+      const line = view.state.doc.lineAt(pos);
+      pos = line.to + 1;
+      if (!TASK_LINE_RE2.test(line.text))
+        continue;
+      const touched = sel.ranges.some((r) => r.from <= line.to && r.to >= line.from);
+      if (touched)
+        continue;
+      const ranges = [];
+      chipsForLine(line.text, line.from, ranges);
+      ranges.sort((a, b) => a.start - b.start);
+      for (const r of ranges) {
+        builder.add(r.start, r.end, import_view.Decoration.replace({ widget: new ChipWidget(r.spec) }));
+      }
+    }
+  }
+  return builder.finish();
+}
+function metadataChipsExtension() {
+  return import_view.ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = buildDecorations(view);
+      }
+      update(update) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+          this.decorations = buildDecorations(update.view);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
+// src/archive-modal.ts
 var import_obsidian = require("obsidian");
+var ArchiveBacklogModal = class extends import_obsidian.Modal {
+  constructor(app, path, count, samples, onApply) {
+    super(app);
+    this.path = path;
+    this.count = count;
+    this.samples = samples;
+    this.onApply = onApply;
+  }
+  onOpen() {
+    var _a;
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Archive the backlog" });
+    const name = (_a = this.path.split("/").pop()) != null ? _a : this.path;
+    if (this.count === 0) {
+      contentEl.createDiv({
+        cls: "smart-todo-edit-hint",
+        text: `No open tasks in ${name}. Nothing to archive.`
+      });
+      const done = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
+      done.createEl("button", { cls: "mod-cta", text: "Close" }).addEventListener("click", () => this.close());
+      return;
+    }
+    contentEl.createDiv({
+      cls: "smart-todo-edit-hint",
+      text: `${this.count} open task${this.count === 1 ? "" : "s"} in ${name} will move to an "## Archive" section at the foot of the note, stamped with today's date. Sub-tasks travel with their parent.`
+    });
+    contentEl.createDiv({
+      cls: "smart-todo-edit-hint",
+      text: "Nothing is deleted and nothing is marked done \u2014 the lines keep their text, dates and ids, they just stop showing in the panel. To bring one back, cut it out of the Archive section."
+    });
+    if (this.samples.length > 0) {
+      const list = contentEl.createDiv({ cls: "smart-todo-migrate-list" });
+      for (const title of this.samples) {
+        list.createDiv({ cls: "smart-todo-migrate-from", text: title });
+      }
+      if (this.count > this.samples.length) {
+        list.createDiv({
+          cls: "smart-todo-edit-hint",
+          text: `\u2026and ${this.count - this.samples.length} more.`
+        });
+      }
+    }
+    const actions = contentEl.createDiv({ cls: "smart-todo-modal-actions" });
+    actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+    const apply = actions.createEl("button", {
+      cls: "mod-cta",
+      text: `Archive ${this.count}`
+    });
+    apply.addEventListener("click", () => {
+      this.close();
+      void this.onApply();
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
+// src/settings.ts
+var import_obsidian2 = require("obsidian");
 var WEEK_PATTERN = "2. Day Planners/Weeks/Week {{week}} of {{year}}.md";
-var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
+var SmartTodoSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -595,7 +875,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         text: `Currently matching ${matches.length} file${matches.length === 1 ? "" : "s"} in the vault. New tasks go to ${primaryManagedFile(scope)}.`
       });
     };
-    new import_obsidian.Setting(el).setName("Managed files").setDesc(
+    new import_obsidian2.Setting(el).setName("Managed files").setDesc(
       `Comma-separated. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}, Projects/Tasks". To add a project note, right-click it and choose "Smart ToDo: track tasks in this note" instead of typing it here.`
     ).addTextArea((text) => {
       text.setPlaceholder(DEFAULT_MANAGED_FILE).setValue(this.plugin.settings.managedFiles).onChange(async (value) => {
@@ -609,7 +889,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
     });
     el.appendChild(summary);
     renderSummary();
-    new import_obsidian.Setting(el).setName("Create the managed file").setDesc(
+    new import_obsidian2.Setting(el).setName("Create the managed file").setDesc(
       "Creates the file new tasks are appended to, if it doesn't exist yet."
     ).addButton(
       (btn) => btn.setButtonText("Create now").onClick(async () => {
@@ -617,7 +897,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         renderSummary();
       })
     );
-    new import_obsidian.Setting(el).setName("Inbox file").setDesc(
+    new import_obsidian2.Setting(el).setName("Inbox file").setDesc(
       `Optional. Open tasks in this file are treated as untriaged captures: they show in an Inbox bucket at the top of the panel and nowhere else. Keep moves one into ${primaryManagedFile(this.plugin.scope)}. Leave blank to turn the Inbox off.`
     ).addText((text) => {
       text.setPlaceholder("Task inbox.md").setValue(this.plugin.settings.inboxFile).onChange(async (value) => {
@@ -638,7 +918,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         cls: "setting-item-description",
         text: `\u26A0 ${path} isn't in the managed scope above, so it's never scanned \u2014 the Inbox will stay empty.`
       });
-      new import_obsidian.Setting(inboxWarning).setName("Add the inbox to managed files").addButton(
+      new import_obsidian2.Setting(inboxWarning).setName("Add the inbox to managed files").addButton(
         (btn) => btn.setButtonText("Add to scope").onClick(async () => {
           const current = this.plugin.settings.managedFiles.trim();
           this.plugin.settings.managedFiles = current ? `${current}, ${path}` : path;
@@ -654,7 +934,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       cls: "setting-item-description",
       text: "A tracked path can carry {{week}}, {{week:02}} and {{year}}, which resolve each time the panel scans. Track the pattern once and the right week's page is always the one being read."
     });
-    new import_obsidian.Setting(el).setName("Resolve {{week}} and {{year}} in tracked paths").setDesc(
+    new import_obsidian2.Setting(el).setName("Resolve {{week}} and {{year}} in tracked paths").setDesc(
       "Off means a path with braces in it is skipped rather than treated as a literal filename."
     ).addToggle(
       (t) => t.setValue(this.plugin.settings.weekTokensEnabled !== false).onChange(async (v) => {
@@ -664,7 +944,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         this.plugin.refreshViews();
       })
     );
-    new import_obsidian.Setting(el).setName("Weeks start on").setDesc(
+    new import_obsidian2.Setting(el).setName("Weeks start on").setDesc(
       `Which convention your week-page numbering follows. Sunday is the US convention (week 1 contains Jan 1); Monday is ISO-8601. These disagree by one for much of the year, and the wrong one points at an adjacent week's file \u2014 which looks like the feature not working. Right now: week ${weekNumber(new Date(), (_a = this.plugin.settings.weekStart) != null ? _a : "sunday")}.`
     ).addDropdown((dd) => {
       var _a2;
@@ -678,7 +958,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         this.display();
       });
     });
-    new import_obsidian.Setting(el).setName("Track this week's page").setDesc(
+    new import_obsidian2.Setting(el).setName("Track this week's page").setDesc(
       `Adds "${WEEK_PATTERN}" to the managed files above. Edit the pattern there if your weekly notes live somewhere else.`
     ).addButton(
       (btn) => btn.setButtonText(
@@ -697,14 +977,14 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
           (_a2 = this.plugin.settings.weekStart) != null ? _a2 : "sunday"
         );
         const exists = !!this.app.vault.getAbstractFileByPath(resolved);
-        new import_obsidian.Notice(
+        new import_obsidian2.Notice(
           exists ? `Smart ToDo: tracking ${resolved}.` : `Smart ToDo: pattern added, but ${resolved} doesn't exist yet \u2014 check the folder and the week-start setting.`,
           8e3
         );
         this.display();
       })
     );
-    new import_obsidian.Setting(el).setName("Headings that mean important").setDesc(
+    new import_obsidian2.Setting(el).setName("Headings that mean important").setDesc(
       'Comma-separated. A task under a heading containing any of these counts as important unless the task says otherwise itself \u2014 the judgment on "Focus this week, what is Important and Urgent" was made once for the whole list rather than once per line. The panel marks inferred importance with \xA7 so you can see where it came from.'
     ).addTextArea((text) => {
       var _a2;
@@ -716,7 +996,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       text.inputEl.rows = 2;
       text.inputEl.addClass("smart-todo-scope-input");
     });
-    new import_obsidian.Setting(el).setName("Split tracked notes by heading").setDesc(
+    new import_obsidian2.Setting(el).setName("Split tracked notes by heading").setDesc(
       "Inside a tracked note, group its tasks under the heading each sits below. On a weekly page those sections are most of the meaning."
     ).addToggle(
       (t) => t.setValue(this.plugin.settings.groupByHeading !== false).onChange(async (v) => {
@@ -726,7 +1006,15 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     el.createEl("h3", { text: "Display" });
-    const accentSetting = new import_obsidian.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
+    new import_obsidian2.Setting(el).setName("Metadata as chips in the editor").setDesc(
+      "Show [due:: \u2026], [effort:: \u2026] and the legacy emoji as small chips while editing a note. Put the cursor on a line to see the raw text \u2014 nothing is hidden from editing, and the file on disk is unchanged."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.metadataChips !== false).onChange(async (v) => {
+        this.plugin.settings.metadataChips = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    const accentSetting = new import_obsidian2.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
     const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
     const paintAccents = () => {
       accentRow.empty();
@@ -747,7 +1035,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       }
     };
     paintAccents();
-    new import_obsidian.Setting(el).setName("Opens in").setDesc(
+    new import_obsidian2.Setting(el).setName("Opens in").setDesc(
       "Which mode the panel starts in. Focus groups by Eisenhower quadrant, Sweep runs the timer, Lanes shows the effort board."
     ).addDropdown((dd) => {
       for (const m of MODES)
@@ -757,7 +1045,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(el).setName("Pushes warning threshold").setDesc(
+    new import_obsidian2.Setting(el).setName("Pushes warning threshold").setDesc(
       "The pushes badge turns amber at or above this count \u2014 your procrastination signal. Set higher to only flag chronic avoiders."
     ).addText(
       (text) => text.setValue(String(this.plugin.settings.pushesWarnThreshold)).onChange(async (value) => {
@@ -774,7 +1062,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       cls: "setting-item-description",
       text: "A sweep is a timed run through the three-minute tasks: one at a time, with Done / Skip / Takes longer on the keyboard."
     });
-    new import_obsidian.Setting(el).setName("Offer a sweep in the list").setDesc(
+    new import_obsidian2.Setting(el).setName("Offer a sweep in the list").setDesc(
       `Shows a "you have N quick wins" banner inside the task list when there are at least two. Turn this off if you'd rather only reach Sweep from the mode row.`
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showSweepBanner).onChange(async (value) => {
@@ -783,7 +1071,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
         this.plugin.refreshViews();
       })
     );
-    new import_obsidian.Setting(el).setName("Seconds per task").setDesc(
+    new import_obsidian2.Setting(el).setName("Seconds per task").setDesc(
       "The countdown for each task in a sweep. Three minutes is the point of the light-effort tag, so that's the default; going over doesn't stop you, it just turns the clock red."
     ).addText(
       (text) => text.setValue(String(this.plugin.settings.sweepSeconds)).onChange(async (value) => {
@@ -799,7 +1087,7 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
       cls: "setting-item-description",
       text: "Tasks carry one of three categories \u2014 Betaworks, Personal, Health \u2014 stored in the same [project:: \u2026] field, so Dataview and Tasks queries keep working. Imported tasks with older project names can be folded onto the three in one pass; you'll see every change first."
     });
-    new import_obsidian.Setting(el).setName("Fold projects into categories").setDesc(
+    new import_obsidian2.Setting(el).setName("Fold projects into categories").setDesc(
       "Previews the retag, then applies it one line at a time. Tasks with no project are left alone."
     ).addButton(
       (btn) => btn.setButtonText("Review changes").onClick(() => void this.plugin.openCategoryMigration())
@@ -808,8 +1096,8 @@ var SmartTodoSettingTab = class extends import_obsidian.PluginSettingTab {
 };
 
 // src/add-task-modal.ts
-var import_obsidian2 = require("obsidian");
-var AddTaskModal = class extends import_obsidian2.Modal {
+var import_obsidian3 = require("obsidian");
+var AddTaskModal = class extends import_obsidian3.Modal {
   constructor(app, onSubmit) {
     super(app);
     this.onSubmit = onSubmit;
@@ -826,7 +1114,7 @@ var AddTaskModal = class extends import_obsidian2.Modal {
       this.close();
       this.onSubmit(value);
     };
-    new import_obsidian2.Setting(contentEl).setName("Task").addText((text) => {
+    new import_obsidian3.Setting(contentEl).setName("Task").addText((text) => {
       text.setPlaceholder("What needs doing?").onChange((value) => {
         this.title = value;
       });
@@ -839,7 +1127,7 @@ var AddTaskModal = class extends import_obsidian2.Modal {
       });
       window.setTimeout(() => text.inputEl.focus(), 0);
     });
-    new import_obsidian2.Setting(contentEl).addButton(
+    new import_obsidian3.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Add").setCta().onClick(commit)
     );
   }
@@ -849,12 +1137,12 @@ var AddTaskModal = class extends import_obsidian2.Modal {
 };
 
 // src/writer.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var StaleTaskError = class extends Error {
 };
 function getFile(app, path) {
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof import_obsidian3.TFile)) {
+  if (!(file instanceof import_obsidian4.TFile)) {
     throw new StaleTaskError(`File no longer exists: ${path}`);
   }
   return file;
@@ -907,15 +1195,14 @@ function removeInlineField(line, key) {
   const re = new RegExp(`\\s*\\[${key}\\s*::\\s*[^\\]]*\\]`, "i");
   return line.replace(re, "");
 }
-function setEmojiDate(line, emoji, re, date) {
-  const token = `${emoji} ${formatDate(date)}`;
-  if (re.test(line)) {
-    return line.replace(re, token);
-  }
-  return `${line.replace(/\s+$/, "")} ${token}`;
-}
 function removeEmojiDate(line, re) {
   return line.replace(new RegExp(`\\s*${re.source}`), "");
+}
+function setDateField(line, key, emojiRe, date) {
+  return setInlineField(removeEmojiDate(line, emojiRe), key, formatDate(date));
+}
+function clearDateField(line, key, emojiRe) {
+  return removeInlineField(removeEmojiDate(line, emojiRe), key);
 }
 function setCheckbox(line, done) {
   return line.replace(
@@ -924,13 +1211,8 @@ function setCheckbox(line, done) {
   );
 }
 function buildToggledLine(task, nowDone) {
-  let line = setCheckbox(task.rawText, nowDone);
-  if (nowDone) {
-    line = setEmojiDate(line, "\u2705", DONE_DATE_RE, startOfToday());
-  } else {
-    line = removeEmojiDate(line, DONE_DATE_RE);
-  }
-  return line;
+  const line = setCheckbox(task.rawText, nowDone);
+  return nowDone ? setDateField(line, "done", DONE_DATE_RE, startOfToday()) : clearDateField(line, "done", DONE_DATE_RE);
 }
 async function toggleTaskDone(app, task, nowDone) {
   await replaceTaskLine(app, task, buildToggledLine(task, nowDone));
@@ -946,9 +1228,9 @@ function buildPushedLine(task, days = 1) {
   const target = pushTargetDate(task, days, today);
   let line = task.rawText;
   if (task.due || !task.defer) {
-    line = setEmojiDate(line, "\u{1F4C5}", DUE_RE, target);
+    line = setDateField(line, "due", DUE_RE, target);
   }
-  line = setEmojiDate(line, "\u23F3", DEFER_RE, target);
+  line = setDateField(line, "defer", DEFER_RE, target);
   line = setInlineField(line, "pushes", String(task.pushes + 1));
   return line;
 }
@@ -1010,10 +1292,10 @@ function buildPatchedLine(task, patch) {
     line = buildRetitledLine(task, patch.title);
   }
   if (patch.due !== void 0) {
-    line = patch.due === null ? removeEmojiDate(line, DUE_RE) : setEmojiDate(line, "\u{1F4C5}", DUE_RE, patch.due);
+    line = patch.due === null ? clearDateField(line, "due", DUE_RE) : setDateField(line, "due", DUE_RE, patch.due);
   }
   if (patch.defer !== void 0) {
-    line = patch.defer === null ? removeEmojiDate(line, DEFER_RE) : setEmojiDate(line, "\u23F3", DEFER_RE, patch.defer);
+    line = patch.defer === null ? clearDateField(line, "defer", DEFER_RE) : setDateField(line, "defer", DEFER_RE, patch.defer);
   }
   if (patch.effort !== void 0) {
     line = patch.effort === null ? removeInlineField(line, "effort") : setInlineField(line, "effort", patch.effort);
@@ -1109,7 +1391,7 @@ ${line}`);
 }
 async function ensureManagedFile(app, path) {
   const existing = app.vault.getAbstractFileByPath(path);
-  if (existing instanceof import_obsidian3.TFile)
+  if (existing instanceof import_obsidian4.TFile)
     return existing;
   const slash = path.lastIndexOf("/");
   if (slash > 0) {
@@ -1165,13 +1447,105 @@ function buildDroppedLine(task) {
 async function dropTask(app, task) {
   await replaceTaskLine(app, task, buildDroppedLine(task));
 }
+function spanOf(lines, from, indent) {
+  let end = from + 1;
+  for (let i = from + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*(```|~~~)/.test(line))
+      break;
+    if (/^(#{1,6})\s/.test(line))
+      break;
+    if (line.trim() === "") {
+      end = i + 1;
+      continue;
+    }
+    if (indentWidth(line) <= indent)
+      break;
+    end = i + 1;
+  }
+  while (end > from + 1 && lines[end - 1].trim() === "")
+    end--;
+  return end;
+}
+function indentWidth(line) {
+  var _a, _b;
+  const ws = (_b = (_a = /^[ \t]*/.exec(line)) == null ? void 0 : _a[0]) != null ? _b : "";
+  return ws.replace(/\t/g, "    ").length;
+}
+function buildArchivedContent(content, openLineNumbers, today = startOfToday()) {
+  var _a;
+  if (openLineNumbers.length === 0)
+    return { content, moved: 0 };
+  const lines = content.split("\n");
+  const take = /* @__PURE__ */ new Set();
+  let moved = 0;
+  for (const n of [...openLineNumbers].sort((a, b) => a - b)) {
+    if (take.has(n) || !lines[n])
+      continue;
+    const end = spanOf(lines, n, indentWidth(lines[n]));
+    for (let i = n; i < end; i++)
+      take.add(i);
+    moved++;
+  }
+  if (moved === 0)
+    return { content, moved: 0 };
+  const stamp = formatDate(today);
+  const block = [];
+  const kept = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!take.has(i)) {
+      kept.push(lines[i]);
+      continue;
+    }
+    block.push(
+      /^\s*(?:[-*+]|\d+[.)])\s+\[.\]\s/.test(lines[i]) ? setInlineField(lines[i], "archived", stamp) : lines[i]
+    );
+  }
+  const body = kept.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "");
+  const existing = kept.findIndex((l) => {
+    const m = /^(#{1,6})\s+(.*)$/.exec(l);
+    return !!m && /^archive\b/i.test(m[2].trim());
+  });
+  if (existing >= 0) {
+    const out = body.split("\n");
+    const level = ((_a = /^(#{1,6})\s/.exec(out[existing])) != null ? _a : ["", "#"])[1].length;
+    let at = out.length;
+    for (let j = existing + 1; j < out.length; j++) {
+      const next = /^(#{1,6})\s/.exec(out[j]);
+      if (next && next[1].length <= level) {
+        at = j;
+        break;
+      }
+    }
+    while (at > existing + 1 && out[at - 1].trim() === "")
+      at--;
+    out.splice(at, 0, ...block);
+    return { content: `${out.join("\n")}
+`, moved };
+  }
+  return {
+    content: `${[body, "", "## Archive", "", ...block].join("\n")}
+`,
+    moved
+  };
+}
+async function archiveOpenTasks(app, path, openLinesOf) {
+  const file = getFile(app, path);
+  let moved = 0;
+  await processFile(app, file, (content) => {
+    const result = buildArchivedContent(content, openLinesOf(content));
+    moved = result.moved;
+    return moved === 0 ? content : result.content;
+  });
+  return moved;
+}
 async function safeWrite(fn) {
   try {
     await fn();
     return true;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    new import_obsidian3.Notice(`Smart ToDo: ${msg}`, 6e3);
+    new import_obsidian4.Notice(`Smart ToDo: ${msg}`, 6e3);
     console.error("[smart-todo] write failed", e);
     return false;
   }
@@ -1395,9 +1769,9 @@ function buildCaptureBody(app, input) {
   const { title, due, defer, effort, project, assigned } = parseCapture(app, input);
   let body = title;
   if (due)
-    body += ` \u{1F4C5} ${formatDate(due)}`;
+    body += ` [due:: ${formatDate(due)}]`;
   if (defer)
-    body += ` \u23F3 ${formatDate(defer)}`;
+    body += ` [defer:: ${formatDate(defer)}]`;
   if (effort)
     body += ` [effort:: ${effort}]`;
   if (project)
@@ -1408,7 +1782,7 @@ function buildCaptureBody(app, input) {
 }
 
 // src/view.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/filters.ts
 var URGENT_WINDOW_DAYS = 2;
@@ -1590,11 +1964,11 @@ function compareCompleted(a, b) {
 }
 
 // src/edit-task-modal.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 function dateInputValue(date) {
   return date ? formatDate(date) : "";
 }
-var EditTaskModal = class extends import_obsidian4.Modal {
+var EditTaskModal = class extends import_obsidian5.Modal {
   constructor(app, task, onSubmit, onReveal) {
     super(app);
     this.task = task;
@@ -1777,7 +2151,7 @@ var EditTaskModal = class extends import_obsidian4.Modal {
       cls: "smart-todo-edit-reveal",
       text: "Open in note"
     });
-    (0, import_obsidian4.setIcon)(reveal.createSpan({ cls: "smart-todo-edit-reveal-icon" }), "file-text");
+    (0, import_obsidian5.setIcon)(reveal.createSpan({ cls: "smart-todo-edit-reveal-icon" }), "file-text");
     reveal.addEventListener("click", () => {
       this.close();
       this.onReveal();
@@ -1827,7 +2201,7 @@ var EditTaskModal = class extends import_obsidian4.Modal {
     const d = this.draft;
     const t = this.task;
     if (!d.title.trim()) {
-      new import_obsidian4.Notice("Smart ToDo: a task needs a title.", 4e3);
+      new import_obsidian5.Notice("Smart ToDo: a task needs a title.", 4e3);
       return;
     }
     if (d.title.trim() !== t.title)
@@ -1855,14 +2229,14 @@ var EditTaskModal = class extends import_obsidian4.Modal {
 };
 
 // src/sweep-modal.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var NEXT_EFFORT = {
   light: "moderate",
   moderate: "heavy",
   heavy: "deep",
   deep: null
 };
-var SweepModal = class extends import_obsidian5.Modal {
+var SweepModal = class extends import_obsidian6.Modal {
   constructor(app, queue, seconds, onFinish) {
     super(app);
     this.index = 0;
@@ -1944,7 +2318,7 @@ var SweepModal = class extends import_obsidian5.Modal {
     }
     const head = this.bodyEl.createDiv({ cls: "stw-sweep-head" });
     const badge = head.createSpan({ cls: "stw-sweep-badge" });
-    (0, import_obsidian5.setIcon)(badge.createSpan({ cls: "stw-sweep-badge-icon" }), "zap");
+    (0, import_obsidian6.setIcon)(badge.createSpan({ cls: "stw-sweep-badge-icon" }), "zap");
     badge.createSpan({
       text: `Quick win ${this.index + 1} of ${this.queue.length}`
     });
@@ -2034,8 +2408,8 @@ var SweepModal = class extends import_obsidian5.Modal {
 };
 
 // src/quick-switch.ts
-var import_obsidian6 = require("obsidian");
-var QuickSwitchModal = class extends import_obsidian6.SuggestModal {
+var import_obsidian7 = require("obsidian");
+var QuickSwitchModal = class extends import_obsidian7.SuggestModal {
   constructor(app, tasks, onPick) {
     super(app);
     this.onPick = onPick;
@@ -2121,7 +2495,7 @@ function buildRows(tasks) {
 }
 
 // src/view.ts
-var SmartTodoView = class extends import_obsidian7.ItemView {
+var SmartTodoView = class extends import_obsidian8.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.mode = "focus";
@@ -2188,7 +2562,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     const bar = root.createDiv({ cls: "stw-titlebar" });
     const brand = bar.createDiv({ cls: "stw-brand" });
     const mark = brand.createSpan({ cls: "stw-mark" });
-    (0, import_obsidian7.setIcon)(mark, "check");
+    (0, import_obsidian8.setIcon)(mark, "check");
     brand.createSpan({ cls: "stw-brand-name", text: "Smart ToDo" });
     bar.createSpan({
       cls: "stw-date",
@@ -2202,13 +2576,13 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       cls: "stw-icon-btn",
       attr: { "aria-label": "Rescan vault" }
     });
-    (0, import_obsidian7.setIcon)(refresh, "refresh-cw");
+    (0, import_obsidian8.setIcon)(refresh, "refresh-cw");
     refresh.addEventListener("click", () => void this.refresh());
     const add = bar.createEl("button", {
       cls: "stw-icon-btn is-primary",
       attr: { "aria-label": "Add task" }
     });
-    (0, import_obsidian7.setIcon)(add, "plus");
+    (0, import_obsidian8.setIcon)(add, "plus");
     add.addEventListener("click", () => this.focusCapture());
   }
   /**
@@ -2219,7 +2593,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
   renderSearch(root) {
     const wrap = root.createDiv({ cls: "stw-search" });
     const icon = wrap.createSpan({ cls: "stw-search-icon" });
-    (0, import_obsidian7.setIcon)(icon, "search");
+    (0, import_obsidian8.setIcon)(icon, "search");
     this.searchInputEl = wrap.createEl("input", {
       cls: "stw-search-input",
       attr: { type: "text", placeholder: "work, quick, do first\u2026" }
@@ -2331,7 +2705,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     for (const m of MODES) {
       const btn = row.createEl("button", { cls: "stw-mode" });
       const ic = btn.createSpan({ cls: "stw-mode-icon" });
-      (0, import_obsidian7.setIcon)(ic, m.icon);
+      (0, import_obsidian8.setIcon)(ic, m.icon);
       btn.createSpan({ cls: "stw-mode-label", text: m.label });
       btn.createSpan({ cls: "stw-mode-count", text: String(this.countForMode(m.id)) });
       if (m.id === this.mode)
@@ -2346,9 +2720,9 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     when.createSpan({
       text: (_b = (_a = HORIZONS.find((h) => h.id === this.horizon)) == null ? void 0 : _a.label) != null ? _b : "Today"
     });
-    (0, import_obsidian7.setIcon)(when.createSpan({ cls: "stw-when-caret" }), "chevron-down");
+    (0, import_obsidian8.setIcon)(when.createSpan({ cls: "stw-when-caret" }), "chevron-down");
     when.addEventListener("click", (evt) => {
-      const menu = new import_obsidian7.Menu();
+      const menu = new import_obsidian8.Menu();
       for (const h of HORIZONS) {
         menu.addItem(
           (item) => item.setTitle(h.label).setChecked(this.horizon === h.id).onClick(() => {
@@ -2615,7 +2989,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     const wrap = this.bodyEl.createDiv({ cls: "stw-inbox" });
     const head = wrap.createDiv({ cls: "stw-inbox-head" });
     const caret = head.createSpan({ cls: "stw-inbox-caret" });
-    (0, import_obsidian7.setIcon)(caret, this.inboxOpen ? "chevron-down" : "chevron-right");
+    (0, import_obsidian8.setIcon)(caret, this.inboxOpen ? "chevron-down" : "chevron-right");
     head.createSpan({ cls: "stw-inbox-title", text: "Inbox" });
     head.createSpan({ cls: "stw-inbox-count", text: String(inbox.length) });
     head.setAttr(
@@ -2664,7 +3038,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       keep.disabled = true;
       const ok = await safeWrite(() => moveTaskLine(this.app, task, target));
       if (ok)
-        new import_obsidian7.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
+        new import_obsidian8.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
       await this.refresh();
     });
     const edit = actions.createEl("button", { cls: "stw-inbox-btn", text: "Edit" });
@@ -2820,8 +3194,8 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       cls: `stw-source-head${collapsed ? " is-collapsed" : ""}`
     });
     const caret = head.createSpan({ cls: "stw-source-caret" });
-    (0, import_obsidian7.setIcon)(caret, collapsed ? "chevron-right" : "chevron-down");
-    (0, import_obsidian7.setIcon)(head.createSpan({ cls: "stw-source-head-icon" }), "file-text");
+    (0, import_obsidian8.setIcon)(caret, collapsed ? "chevron-right" : "chevron-down");
+    (0, import_obsidian8.setIcon)(head.createSpan({ cls: "stw-source-head-icon" }), "file-text");
     head.createSpan({ cls: "stw-source-title", text: label });
     const minutes = estimateMinutes(group.tasks);
     head.createSpan({
@@ -2837,7 +3211,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       var _a;
       evt.preventDefault();
       evt.stopPropagation();
-      const menu = new import_obsidian7.Menu();
+      const menu = new import_obsidian8.Menu();
       menu.addItem(
         (item) => item.setTitle("Rename this group\u2026").setIcon("pencil").onClick(() => this.renameSource(group.path, head))
       );
@@ -2981,7 +3355,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
   renderSweepBanner(quickies) {
     const banner = this.bodyEl.createDiv({ cls: "stw-sweep-banner" });
     const icon = banner.createSpan({ cls: "stw-sweep-banner-icon" });
-    (0, import_obsidian7.setIcon)(icon, "zap");
+    (0, import_obsidian8.setIcon)(icon, "zap");
     const text = banner.createDiv({ cls: "stw-sweep-banner-text" });
     text.createDiv({
       cls: "stw-sweep-banner-head",
@@ -3175,7 +3549,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
           title: "Push to tomorrow (rests until then). Right-click for longer."
         }
       });
-      (0, import_obsidian7.setIcon)(pushBtn, "chevrons-right");
+      (0, import_obsidian8.setIcon)(pushBtn, "chevrons-right");
       pushBtn.addEventListener("click", async (evt) => {
         evt.stopPropagation();
         pushBtn.disabled = true;
@@ -3184,7 +3558,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       pushBtn.addEventListener("contextmenu", (evt) => {
         evt.preventDefault();
         evt.stopPropagation();
-        const menu = new import_obsidian7.Menu();
+        const menu = new import_obsidian8.Menu();
         for (const [days, label] of [
           [1, "Tomorrow"],
           [2, "In 2 days"],
@@ -3210,7 +3584,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     const ok = await safeWrite(() => pushTask(this.app, task, days));
     if (ok) {
       const when = pushTargetDate(task, days);
-      new import_obsidian7.Notice(
+      new import_obsidian8.Notice(
         `Pushed to ${this.humanDate(when, startOfToday())} \u2014 resting until then, so it's out of Do First.`,
         4e3
       );
@@ -3239,7 +3613,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       attr: { "aria-label": "Click to change" }
     });
     if (task.effort === "light")
-      (0, import_obsidian7.setIcon)(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
+      (0, import_obsidian8.setIcon)(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
     pill.createSpan({ text: EFFORT_LABEL[task.effort] });
     pill.addEventListener("click", open);
     pill.addEventListener("contextmenu", open);
@@ -3258,7 +3632,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
         "aria-label": state === "yes" ? "Important \u2014 click to mark not important" : state === "no" ? "Not important \u2014 click to clear" : "Importance not set \u2014 click to mark important"
       }
     });
-    (0, import_obsidian7.setIcon)(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
+    (0, import_obsidian8.setIcon)(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
     star.addEventListener("click", (evt) => {
       evt.stopPropagation();
       const next = task.important === null ? true : task.important === true ? false : null;
@@ -3271,7 +3645,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
     });
   }
   showEffortMenu(evt, task) {
-    const menu = new import_obsidian7.Menu();
+    const menu = new import_obsidian8.Menu();
     for (const effort of EFFORTS) {
       menu.addItem(
         (item) => item.setTitle(EFFORT_LABEL[effort]).setChecked(task.effort === effort).onClick(async () => {
@@ -3309,7 +3683,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
       cls: "stw-source-chip",
       attr: { "aria-label": `From ${task.filePath} \u2014 click to open` }
     });
-    (0, import_obsidian7.setIcon)(chip.createSpan({ cls: "stw-source-icon" }), "file-text");
+    (0, import_obsidian8.setIcon)(chip.createSpan({ cls: "stw-source-icon" }), "file-text");
     chip.createSpan({ text: name });
     chip.addEventListener("click", (evt) => {
       evt.preventDefault();
@@ -3346,7 +3720,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
   }
   showCategoryMenu(evt, task) {
     const current = asCategory(task.project);
-    const menu = new import_obsidian7.Menu();
+    const menu = new import_obsidian8.Menu();
     for (const cat of CATEGORIES) {
       menu.addItem(
         (item) => item.setTitle(CATEGORY_LABEL[cat]).setChecked(current === cat).onClick(async () => {
@@ -3402,7 +3776,7 @@ var SmartTodoView = class extends import_obsidian7.ItemView {
 };
 
 // src/categorize.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 function planCategoryMigration(tasks) {
   var _a;
   const changes = [];
@@ -3432,7 +3806,7 @@ function groupPlan(changes) {
     froms: Array.from(byTarget.get(cat).entries()).map(([from, count]) => ({ from, count })).sort((a, b) => b.count - a.count || a.from.localeCompare(b.from))
   }));
 }
-var CategoryMigrationModal = class extends import_obsidian8.Modal {
+var CategoryMigrationModal = class extends import_obsidian9.Modal {
   constructor(app, changes, onApply) {
     super(app);
     this.changes = changes;
@@ -3495,15 +3869,26 @@ var CategoryMigrationModal = class extends import_obsidian8.Modal {
 
 // src/main.ts
 var REFRESH_DEBOUNCE_MS = 250;
-var SmartTodoPlugin = class extends import_obsidian9.Plugin {
+var SmartTodoPlugin = class extends import_obsidian10.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.refreshTimer = null;
+    /**
+     * Registered once, mutated in place.
+     *
+     * `registerEditorExtension` is one-way — there's no unregister — so toggling
+     * the chips setting works by emptying this array and asking the workspace to
+     * reconfigure. Registering the extension twice instead would leave two
+     * decoration sets fighting over the same ranges.
+     */
+    this.editorExtensions = [];
   }
   async onload() {
     await this.loadSettings();
     this.applyAccent();
+    this.registerEditorExtension(this.editorExtensions);
+    this.applyChipExtension();
     this.registerView(
       VIEW_TYPE_SMART_TODO,
       (leaf) => new SmartTodoView(leaf, this)
@@ -3542,7 +3927,7 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       callback: () => {
         void this.withView((view) => {
           if (!view.sweepNow()) {
-            new import_obsidian9.Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4e3);
+            new import_obsidian10.Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4e3);
           }
         });
       }
@@ -3562,7 +3947,7 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
     });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian9.TFile) || file.extension !== "md")
+        if (!(file instanceof import_obsidian10.TFile) || file.extension !== "md")
           return;
         if (samePath(file.path, this.primaryFile))
           return;
@@ -3577,12 +3962,25 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       name: "Fold projects into categories (Betaworks / Personal / Health)",
       callback: () => void this.openCategoryMigration()
     });
+    this.addCommand({
+      id: "archive-backlog",
+      name: "Archive every open task in this note (clean slate)",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md")
+          return false;
+        if (checking)
+          return true;
+        void this.openArchiveBacklog(file);
+        return true;
+      }
+    });
     this.app.workspace.onLayoutReady(() => {
       void this.ensurePrimaryFile();
     });
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian9.TFile && this.isInManagedScope(file.path)) {
+        if (file instanceof import_obsidian10.TFile && this.isInManagedScope(file.path)) {
           this.scheduleRefresh();
         }
       })
@@ -3607,6 +4005,25 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
     this.applyAccent();
+    this.applyChipExtension();
+  }
+  /**
+   * Turn metadata chips on or off without a reload.
+   *
+   * `updateOptions` is what makes the toggle immediate: it reconfigures every
+   * open editor from the (now changed) extension array. Without it the setting
+   * would appear to do nothing until Obsidian restarted, which reads as a
+   * broken checkbox.
+   */
+  applyChipExtension() {
+    const want = this.settings.metadataChips;
+    const on = this.editorExtensions.length > 0;
+    if (want === on)
+      return;
+    this.editorExtensions.length = 0;
+    if (want)
+      this.editorExtensions.push(metadataChipsExtension());
+    this.app.workspace.updateOptions();
   }
   /**
    * Put the accent on `document.body`, not just the panel.
@@ -3633,7 +4050,7 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
   async toggleTracked(path) {
     var _a;
     if (samePath(path, this.primaryFile)) {
-      new import_obsidian9.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
+      new import_obsidian10.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
       return;
     }
     const tracked = scopeIncludesPath(this.settings.managedFiles, path, this.scopeOptions);
@@ -3642,14 +4059,14 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
     this.refreshViews();
     const name = (_a = path.split("/").pop()) != null ? _a : path;
     if (tracked) {
-      new import_obsidian9.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);
+      new import_obsidian10.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);
       return;
     }
     const open = (await this.scan()).filter(
       (t) => samePath(t.filePath, path) && t.status === "open"
     );
     if (open.length === 0) {
-      new import_obsidian9.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
+      new import_obsidian10.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
       return;
     }
     const undated = open.filter((t) => !t.due).length;
@@ -3663,7 +4080,7 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       caveats.push("none are sized, so they only show under the Any budget");
     else if (unsized > 0)
       caveats.push(`${unsized} unsized`);
-    new import_obsidian9.Notice(
+    new import_obsidian10.Notice(
       `Smart ToDo: tracking ${name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.` + (caveats.length > 0 ? ` ${caveats.join("; ")}.` : ""),
       8e3
     );
@@ -3735,7 +4152,7 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
       return;
     try {
       await ensureManagedFile(this.app, path);
-      new import_obsidian9.Notice(`Smart ToDo: created ${path}`, 4e3);
+      new import_obsidian10.Notice(`Smart ToDo: created ${path}`, 4e3);
     } catch (e) {
       console.error("[smart-todo] could not create managed file", path, e);
     }
@@ -3777,12 +4194,54 @@ var SmartTodoPlugin = class extends import_obsidian9.Plugin {
           break;
         applied++;
       }
-      new import_obsidian9.Notice(
+      new import_obsidian10.Notice(
         `Smart ToDo: retagged ${applied} of ${changes.length} task${changes.length === 1 ? "" : "s"}.`,
         5e3
       );
       this.refreshViews();
     }).open();
+  }
+  /**
+   * Preview, then apply, the clean slate for one note.
+   *
+   * The open-line numbers are computed twice on purpose. Once now, from the
+   * file on disk, to put an honest count in the dialog; and again inside
+   * `archiveOpenTasks`, from the content the write is about to replace, so the
+   * lines that move are the lines that are actually there. Reusing the first
+   * pass would archive by stale line number — which on a file being edited in
+   * another window means moving the wrong lines, silently.
+   */
+  async openArchiveBacklog(file) {
+    const openLinesOf = (content2) => {
+      var _a;
+      return parseTasksFromContent(content2, file.path, {
+        importantHeadings: (_a = this.settings.importantHeadings) != null ? _a : DEFAULT_IMPORTANT_HEADINGS
+      }).filter((t) => t.status === "open").map((t) => t.lineNumber);
+    };
+    const content = await this.app.vault.read(file);
+    const tasks = parseTasksFromContent(content, file.path).filter(
+      (t) => t.status === "open"
+    );
+    new ArchiveBacklogModal(
+      this.app,
+      file.path,
+      tasks.length,
+      tasks.slice(0, 8).map((t) => t.title),
+      async () => {
+        var _a;
+        let moved = 0;
+        const ok = await safeWrite(async () => {
+          moved = await archiveOpenTasks(this.app, file.path, openLinesOf);
+        });
+        if (!ok)
+          return;
+        new import_obsidian10.Notice(
+          moved === 0 ? "Smart ToDo: nothing left to archive." : `Smart ToDo: archived ${moved} task${moved === 1 ? "" : "s"} in ${(_a = file.path.split("/").pop()) != null ? _a : file.path}.`,
+          5e3
+        );
+        this.refreshViews();
+      }
+    ).open();
   }
   scheduleRefresh() {
     if (this.refreshTimer)

@@ -200,6 +200,16 @@ export interface SmartTask {
    */
   dropped: Date | null;
   effort: Effort | null;
+  /**
+   * The duration the line actually carried, when it carried one.
+   *
+   * `effort` is the bucket every filter works in; this is the number behind it.
+   * Morgen sends real estimates (`PT30M`), and bucketing throws the number
+   * away — `30m` and `1 hour` both land in `heavy`, but only one of them is
+   * what was written. Null when the line says a bucket word, which has no
+   * number to keep.
+   */
+  effortMinutes: number | null;
   pushes: number;
   project: string | null;
   assigned: string | null;
@@ -404,6 +414,17 @@ export interface SmartTodoSettings {
   importantHeadings: string[];
   /** Split a tracked note's group into sub-sections by its own headings. */
   groupByHeading: boolean;
+  /**
+   * Render task metadata as compact chips in Live Preview, revealing the raw
+   * `[key:: value]` text when the cursor is on the line.
+   *
+   * The plain notation is the right thing to have *in the file* — readable,
+   * greppable, no emoji vocabulary to memorise — and the wrong thing to stare
+   * at while writing, because it's wide. Chips reconcile the two. A setting
+   * rather than a fact because it draws over text the user typed, and that
+   * should always be refusable.
+   */
+  metadataChips: boolean;
 }
 
 export type Layout = "card" | "table";
@@ -427,6 +448,7 @@ export const DEFAULT_SETTINGS: SmartTodoSettings = {
   weekStart: "sunday",
   importantHeadings: [...DEFAULT_IMPORTANT_HEADINGS],
   groupByHeading: true,
+  metadataChips: true,
 };
 
 // --- Categories ----------------------------------------------------------

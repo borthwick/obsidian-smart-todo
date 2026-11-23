@@ -111,17 +111,36 @@ export function removeInlineField(line: string, key: string): string {
   return line.replace(re, "");
 }
 
-/** Set or replace an emoji-dated field, appending if absent. */
-function setEmojiDate(line: string, emoji: string, re: RegExp, date: Date): string {
-  const token = `${emoji} ${formatDate(date)}`;
-  if (re.test(line)) {
-    return line.replace(re, token);
-  }
-  return `${line.replace(/\s+$/, "")} ${token}`;
-}
-
+/**
+ * Strip an emoji-dated token. Reading emoji is permanent; writing it is gone
+ * as of 0.11, so this is the only emoji-date helper left.
+ */
 function removeEmojiDate(line: string, re: RegExp): string {
   return line.replace(new RegExp(`\\s*${re.source}`), "");
+}
+
+/**
+ * Write a date as a plain `[key:: YYYY-MM-DD]`, retiring the line's emoji form
+ * of the same date if it had one.
+ *
+ * This is the whole of the 0.11 vocabulary change. Two notations for one date
+ * on one line (`📅 2026-11-28 [effort:: moderate]`) is the mess — nobody
+ * designed it, it's just what you get when the Tasks plugin owns dates and
+ * Dataview owns everything else. So: one notation, words, and because the emoji
+ * is dropped in the same pass that writes the field, a line can never end up
+ * carrying both and leaving the parser to arbitrate.
+ *
+ * Conversion is per-line and only on touch. No migration sweep runs over the
+ * vault: the parser reads emoji perfectly well, so an untouched line is correct
+ * where it sits, and the ones being worked on clean themselves up.
+ */
+function setDateField(line: string, key: string, emojiRe: RegExp, date: Date): string {
+  return setInlineField(removeEmojiDate(line, emojiRe), key, formatDate(date));
+}
+
+/** Clear a date in both notations — the field and any leftover emoji token. */
+function clearDateField(line: string, key: string, emojiRe: RegExp): string {
+  return removeInlineField(removeEmojiDate(line, emojiRe), key);
 }
 
 /**
@@ -142,17 +161,14 @@ function setCheckbox(line: string, done: boolean): string {
 }
 
 /**
- * Toggle completion. Completing stamps `✅ <today>`; un-completing strips it,
- * so a mis-click leaves no residue.
+ * Toggle completion. Completing stamps `[done:: <today>]`; un-completing
+ * strips it, so a mis-click leaves no residue.
  */
 export function buildToggledLine(task: SmartTask, nowDone: boolean): string {
-  let line = setCheckbox(task.rawText, nowDone);
-  if (nowDone) {
-    line = setEmojiDate(line, "✅", DONE_DATE_RE, startOfToday());
-  } else {
-    line = removeEmojiDate(line, DONE_DATE_RE);
-  }
-  return line;
+  const line = setCheckbox(task.rawText, nowDone);
+  return nowDone
+    ? setDateField(line, "done", DONE_DATE_RE, startOfToday())
+    : clearDateField(line, "done", DONE_DATE_RE);
 }
 
 export async function toggleTaskDone(
@@ -195,9 +211,9 @@ export function buildPushedLine(task: SmartTask, days = 1): string {
   let line = task.rawText;
 
   if (task.due || !task.defer) {
-    line = setEmojiDate(line, "📅", DUE_RE, target);
+    line = setDateField(line, "due", DUE_RE, target);
   }
-  line = setEmojiDate(line, "⏳", DEFER_RE, target);
+  line = setDateField(line, "defer", DEFER_RE, target);
 
   line = setInlineField(line, "pushes", String(task.pushes + 1));
   return line;
@@ -351,15 +367,15 @@ export function buildPatchedLine(task: SmartTask, patch: TaskPatch): string {
   if (patch.due !== undefined) {
     line =
       patch.due === null
-        ? removeEmojiDate(line, DUE_RE)
-        : setEmojiDate(line, "📅", DUE_RE, patch.due);
+        ? clearDateField(line, "due", DUE_RE)
+        : setDateField(line, "due", DUE_RE, patch.due);
   }
 
   if (patch.defer !== undefined) {
     line =
       patch.defer === null
-        ? removeEmojiDate(line, DEFER_RE)
-        : setEmojiDate(line, "⏳", DEFER_RE, patch.defer);
+        ? clearDateField(line, "defer", DEFER_RE)
+        : setDateField(line, "defer", DEFER_RE, patch.defer);
   }
 
   if (patch.effort !== undefined) {
@@ -621,6 +637,158 @@ export function buildDroppedLine(task: SmartTask): string {
 
 export async function dropTask(app: App, task: SmartTask): Promise<void> {
   await replaceTaskLine(app, task, buildDroppedLine(task));
+}
+
+// --- Clean slate: archive the standing backlog ---------------------------
+//
+// The tracker arrived as an OmniFocus export: hundreds of open lines, most of
+// them years of accumulated intent rather than work anyone plans to do. A task
+// list whose first screen is a museum is a task list you stop opening, and no
+// amount of filtering fixes that — the items are genuinely open, they just
+// aren't live.
+//
+// So there's one command that draws a line under the past. It moves, it never
+// deletes: every line keeps its text, dates and `[stream:: …]` id under an
+// `## Archive` heading, which the parser skips (see ARCHIVE_HEADING_RE). Marking
+// them done was the other option and it's a lie about work nobody did.
+
+/** Lines in `[from, to)` that belong to the task starting at `from`. */
+function spanOf(lines: string[], from: number, indent: number): number {
+  let end = from + 1;
+  for (let i = from + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // Never swallow a fence. A ```tasks query indented under an archived item
+    // is the file's own content, not the item's, and moving half a fence
+    // corrupts everything after it.
+    if (/^\s*(```|~~~)/.test(line)) break;
+    if (/^(#{1,6})\s/.test(line)) break;
+    if (line.trim() === "") {
+      end = i + 1;
+      continue;
+    }
+    if (indentWidth(line) <= indent) break;
+    end = i + 1;
+  }
+  // Blank lines belong to the file's shape, not to the item — leave them.
+  while (end > from + 1 && lines[end - 1].trim() === "") end--;
+  return end;
+}
+
+/** Leading whitespace width, tabs as 4 — matches the parser's `indent`. */
+function indentWidth(line: string): number {
+  const ws = /^[ \t]*/.exec(line)?.[0] ?? "";
+  return ws.replace(/\t/g, "    ").length;
+}
+
+export interface ArchiveResult {
+  content: string;
+  /** How many task lines moved. Zero means nothing was written. */
+  moved: number;
+}
+
+/**
+ * Move every open task in `content` under `## Archive`.
+ *
+ * Children travel with their parent — an indented sub-task or an explanatory
+ * note bullet means nothing stranded behind in a different section — and
+ * anything already archived is left exactly where it is, so running this twice
+ * is harmless.
+ *
+ * Each moved task line gets `[archived:: <today>]` so the section records
+ * *when* the line was drawn, which is the only thing about a backlog sweep
+ * worth knowing later.
+ */
+export function buildArchivedContent(
+  content: string,
+  openLineNumbers: number[],
+  today = startOfToday()
+): ArchiveResult {
+  if (openLineNumbers.length === 0) return { content, moved: 0 };
+
+  const lines = content.split("\n");
+  const take = new Set<number>();
+  let moved = 0;
+
+  for (const n of [...openLineNumbers].sort((a, b) => a - b)) {
+    if (take.has(n) || !lines[n]) continue;
+    const end = spanOf(lines, n, indentWidth(lines[n]));
+    for (let i = n; i < end; i++) take.add(i);
+    moved++;
+  }
+  if (moved === 0) return { content, moved: 0 };
+
+  const stamp = formatDate(today);
+  const block: string[] = [];
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!take.has(i)) {
+      kept.push(lines[i]);
+      continue;
+    }
+    // Stamp the task lines only. A child note bullet isn't a task and a date
+    // bolted onto its prose would just be noise in the middle of a sentence.
+    block.push(
+      /^\s*(?:[-*+]|\d+[.)])\s+\[.\]\s/.test(lines[i])
+        ? setInlineField(lines[i], "archived", stamp)
+        : lines[i]
+    );
+  }
+
+  // Collapse the holes the removals left: a section emptied of its tasks
+  // shouldn't become four blank lines under a heading.
+  const body = kept.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "");
+
+  const existing = kept.findIndex((l) => {
+    const m = /^(#{1,6})\s+(.*)$/.exec(l);
+    return !!m && /^archive\b/i.test(m[2].trim());
+  });
+  if (existing >= 0) {
+    const out = body.split("\n");
+    // Append to the end of the existing section, not the end of the file —
+    // the file may well have other headings after it.
+    const level = (/^(#{1,6})\s/.exec(out[existing]) ?? ["", "#"])[1].length;
+    let at = out.length;
+    for (let j = existing + 1; j < out.length; j++) {
+      const next = /^(#{1,6})\s/.exec(out[j]);
+      if (next && next[1].length <= level) {
+        at = j;
+        break;
+      }
+    }
+    while (at > existing + 1 && out[at - 1].trim() === "") at--;
+    out.splice(at, 0, ...block);
+    return { content: `${out.join("\n")}\n`, moved };
+  }
+
+  return {
+    content: `${[body, "", "## Archive", "", ...block].join("\n")}\n`,
+    moved,
+  };
+}
+
+/**
+ * Archive every open task in one file.
+ *
+ * Whole-file rewrite — the one place in this plugin that does that — because
+ * the operation *is* the whole file: hundreds of lines leave their sections and
+ * join one at the bottom. It runs inside `vault.process`, so the read, the
+ * rewrite and the write happen under Obsidian's lock with no window for an
+ * interleaved edit, and the line numbers are taken from the content being
+ * written rather than from the panel's possibly-stale scan.
+ */
+export async function archiveOpenTasks(
+  app: App,
+  path: string,
+  openLinesOf: (content: string) => number[]
+): Promise<number> {
+  const file = getFile(app, path);
+  let moved = 0;
+  await processFile(app, file, (content) => {
+    const result = buildArchivedContent(content, openLinesOf(content));
+    moved = result.moved;
+    return moved === 0 ? content : result.content;
+  });
+  return moved;
 }
 
 /** Surface write failures instead of swallowing them into a silent no-op. */

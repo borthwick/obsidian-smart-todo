@@ -1450,3 +1450,73 @@
   border-radius: 50%;
   background: var(--swatch);
 }
+
+/* --- Editor metadata chips (0.11) ------------------------------------- */
+/*
+ * The chips that stand in for `[due:: 2026-11-28]` and friends in Live
+ * Preview. Deliberately quiet: they sit inside a sentence being written, so
+ * they read as punctuation rather than as UI. The panel's own pills are the
+ * loud version — these are only here to stop a five-field task line from
+ * looking like a config file.
+ */
+.stw-chip {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0.1em;
+  padding: 0 0.42em;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: 0.82em;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: baseline;
+  cursor: text;
+}
+.stw-chip:hover {
+  color: var(--text-normal);
+}
+
+/* A correlation key (stream/morgen uuid) collapses to a dot: present and
+ * clearly machine-owned, but it never earns a word of line width. */
+.stw-chip-dot {
+  padding: 0;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0.6;
+}
+.stw-chip-dot:hover {
+  opacity: 1;
+}
+
+/* Dates are the fields people scan for, so they're the only tinted ones. */
+.stw-chip-due {
+  background: hsla(var(--color-red-rgb, 220 50 50) / 0.1);
+  color: var(--text-accent);
+}
+.stw-chip-defer,
+.stw-chip-start {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.stw-chip-done,
+.stw-chip-cancelled,
+.stw-chip-added {
+  color: var(--text-faint);
+}
+.stw-chip-effort {
+  font-variant-numeric: tabular-nums;
+}
+.stw-chip-important {
+  color: var(--text-accent);
+  font-weight: var(--font-semibold);
+}
+.stw-chip-unimportant,
+.stw-chip-pushes {
+  color: var(--text-faint);
+}
+.stw-chip-priority {
+  text-transform: lowercase;
+}

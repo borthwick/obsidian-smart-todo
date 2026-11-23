@@ -6,7 +6,10 @@
 // cheap because scope is narrow by construction.
 
 import { Menu, Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
-import { scanScope } from "./parser";
+import { Extension } from "@codemirror/state";
+import { parseTasksFromContent, scanScope } from "./parser";
+import { metadataChipsExtension } from "./metadata-chips";
+import { ArchiveBacklogModal } from "./archive-modal";
 import {
   addPathToScope,
   isInScope,
@@ -27,7 +30,13 @@ import {
   VIEW_TYPE_SMART_TODO,
   applyAccentVars,
 } from "./types";
-import { appendTask, ensureManagedFile, safeWrite, setTaskProject } from "./writer";
+import {
+  appendTask,
+  archiveOpenTasks,
+  ensureManagedFile,
+  safeWrite,
+  setTaskProject,
+} from "./writer";
 import { buildCaptureBody } from "./nlparse";
 import { SmartTodoView } from "./view";
 import { CategoryMigrationModal, planCategoryMigration } from "./categorize";
@@ -46,9 +55,22 @@ export default class SmartTodoPlugin extends Plugin {
 
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * Registered once, mutated in place.
+   *
+   * `registerEditorExtension` is one-way — there's no unregister — so toggling
+   * the chips setting works by emptying this array and asking the workspace to
+   * reconfigure. Registering the extension twice instead would leave two
+   * decoration sets fighting over the same ranges.
+   */
+  private editorExtensions: Extension[] = [];
+
   async onload(): Promise<void> {
     await this.loadSettings();
     this.applyAccent();
+
+    this.registerEditorExtension(this.editorExtensions);
+    this.applyChipExtension();
 
     this.registerView(
       VIEW_TYPE_SMART_TODO,
@@ -144,6 +166,22 @@ export default class SmartTodoPlugin extends Plugin {
       callback: () => void this.openCategoryMigration(),
     });
 
+    // Deliberately scoped to the active note rather than the whole scope: the
+    // backlog that needs clearing is the imported tracker, and sweeping the
+    // week page or a live project note along with it would be a disaster
+    // dressed as a convenience.
+    this.addCommand({
+      id: "archive-backlog",
+      name: "Archive every open task in this note (clean slate)",
+      checkCallback: (checking: boolean) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md") return false;
+        if (checking) return true;
+        void this.openArchiveBacklog(file);
+        return true;
+      },
+    });
+
     // Create the managed file after the vault has finished indexing —
     // getAbstractFileByPath is unreliable mid-load and we'd create a duplicate.
     this.app.workspace.onLayoutReady(() => {
@@ -182,6 +220,25 @@ export default class SmartTodoPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
     this.applyAccent();
+    this.applyChipExtension();
+  }
+
+  /**
+   * Turn metadata chips on or off without a reload.
+   *
+   * `updateOptions` is what makes the toggle immediate: it reconfigures every
+   * open editor from the (now changed) extension array. Without it the setting
+   * would appear to do nothing until Obsidian restarted, which reads as a
+   * broken checkbox.
+   */
+  private applyChipExtension(): void {
+    const want = this.settings.metadataChips;
+    const on = this.editorExtensions.length > 0;
+    if (want === on) return;
+
+    this.editorExtensions.length = 0;
+    if (want) this.editorExtensions.push(metadataChipsExtension());
+    this.app.workspace.updateOptions();
   }
 
   /**
@@ -375,6 +432,53 @@ export default class SmartTodoPlugin extends Plugin {
       );
       this.refreshViews();
     }).open();
+  }
+
+  /**
+   * Preview, then apply, the clean slate for one note.
+   *
+   * The open-line numbers are computed twice on purpose. Once now, from the
+   * file on disk, to put an honest count in the dialog; and again inside
+   * `archiveOpenTasks`, from the content the write is about to replace, so the
+   * lines that move are the lines that are actually there. Reusing the first
+   * pass would archive by stale line number — which on a file being edited in
+   * another window means moving the wrong lines, silently.
+   */
+  async openArchiveBacklog(file: TFile): Promise<void> {
+    const openLinesOf = (content: string): number[] =>
+      parseTasksFromContent(content, file.path, {
+        importantHeadings: this.settings.importantHeadings ?? DEFAULT_IMPORTANT_HEADINGS,
+      })
+        .filter((t) => t.status === "open")
+        .map((t) => t.lineNumber);
+
+    const content = await this.app.vault.read(file);
+    const tasks = parseTasksFromContent(content, file.path).filter(
+      (t) => t.status === "open"
+    );
+
+    new ArchiveBacklogModal(
+      this.app,
+      file.path,
+      tasks.length,
+      tasks.slice(0, 8).map((t) => t.title),
+      async () => {
+        let moved = 0;
+        const ok = await safeWrite(async () => {
+          moved = await archiveOpenTasks(this.app, file.path, openLinesOf);
+        });
+        if (!ok) return;
+        new Notice(
+          moved === 0
+            ? "Smart ToDo: nothing left to archive."
+            : `Smart ToDo: archived ${moved} task${moved === 1 ? "" : "s"} in ${
+                file.path.split("/").pop() ?? file.path
+              }.`,
+          5000
+        );
+        this.refreshViews();
+      }
+    ).open();
   }
 
   private scheduleRefresh(): void {

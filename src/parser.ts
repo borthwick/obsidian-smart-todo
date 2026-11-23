@@ -50,6 +50,21 @@ const CANCELLED_MARKERS = new Set(["-"]);
 const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 
 /**
+ * A heading that takes its section out of the plugin's sight.
+ *
+ * The clean slate needs somewhere for a backlog to go that isn't the trash.
+ * Everything under `## Archive` keeps its text, its dates, its `[stream:: …]`
+ * id — it's still in the note, still greppable, still one cut-and-paste from
+ * coming back — and the panel stops counting it. "Done" would be a lie about
+ * work nobody did; deleting it would throw away months of captures. So:
+ * present but not live.
+ *
+ * Matched on the whole section, which is why it's a heading and not a field
+ * per line: archiving 300 items shouldn't mean 300 edits.
+ */
+export const ARCHIVE_HEADING_RE = /^archive\b/i;
+
+/**
  * Strip the decoration John's vault wraps headings in, so a heading can be
  * compared and displayed as plain words.
  *
@@ -66,13 +81,46 @@ export function cleanHeading(raw: string): string {
   );
 }
 
-/** Tasks-plugin native emoji date fields. */
+/**
+ * Tasks-plugin native emoji date fields.
+ *
+ * **Read-only as of 0.11.** The plugin still understands every one of these —
+ * the week page and the OmniFocus import are full of them, and a line the
+ * parser can't read is a task that silently disappears — but it no longer
+ * *writes* them. A single line was carrying hieroglyphs and bracket syntax at
+ * the same time (`📅 2026-11-28 [effort:: moderate]`), which is two dialects
+ * for one idea and the thing that made a task line unreadable at a glance.
+ * Everything Smart ToDo emits is now a plain `[word:: value]`; see
+ * writer.ts `setDateField`, which converts a line's emoji on first touch.
+ */
 export const DUE_RE = /📅\s*(\d{4}-\d{2}-\d{2})/;
 export const DEFER_RE = /⏳\s*(\d{4}-\d{2}-\d{2})/;
 export const DONE_DATE_RE = /✅\s*(\d{4}-\d{2}-\d{2})/;
 
 /** Dataview inline field: `[key:: value]`. Global — a line can carry several. */
 export const INLINE_FIELD_RE = /\[([A-Za-z][\w-]*)\s*::\s*([^\]]*)\]/g;
+
+/**
+ * Read a date that may be written either way, field first.
+ *
+ * The field wins when it holds a parseable date, because it's the dialect this
+ * version writes — so a line mid-conversion (emoji from last week, field from
+ * today's edit) resolves to the newer value rather than to whichever regex ran
+ * first. An unparseable field falls through to the emoji instead of returning
+ * null: a typo in one notation shouldn't erase a date written in the other.
+ */
+function readDate(
+  fieldValue: string | undefined,
+  emojiRe: RegExp,
+  body: string
+): Date | null {
+  if (fieldValue !== undefined) {
+    const fromField = parseDate(fieldValue.trim());
+    if (fromField) return fromField;
+  }
+  const m = emojiRe.exec(body);
+  return m ? parseDate(m[1]) : null;
+}
 
 /** Emoji-date tokens, stripped wholesale when deriving the title. */
 const EMOJI_DATE_TOKEN_RE = /(?:📅|⏳|✅|🛫|➕|❌)\s*\d{4}-\d{2}-\d{2}/g;
@@ -125,6 +173,21 @@ const PRIORITY_BY_EMOJI: Record<string, TaskPriority> = {
 export function parsePriority(body: string): TaskPriority | null {
   const m = new RegExp(PRIORITY_EMOJI_RE.source, "u").exec(body);
   return m ? PRIORITY_BY_EMOJI[m[0]] ?? null : null;
+}
+
+const PRIORITY_WORDS: Record<string, TaskPriority> = {
+  highest: "highest",
+  urgent: "highest",
+  high: "high",
+  medium: "medium",
+  normal: "medium",
+  low: "low",
+  lowest: "lowest",
+};
+
+/** The same five levels, written as a word: `[priority:: high]`. */
+export function parsePriorityWord(value: string): TaskPriority | null {
+  return PRIORITY_WORDS[value.trim().toLowerCase()] ?? null;
 }
 
 /**
@@ -203,10 +266,49 @@ export function isSameDay(a: Date, b: Date): boolean {
   );
 }
 
+/**
+ * Minutes written as a duration: `15m`, `30 min`, `1h`, `1.5 hours`, `90`.
+ * A bare number is minutes — that's how you'd write it on a line.
+ */
+const DURATION_RE = /^(\d+(?:\.\d+)?)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/;
+
+export function parseMinutes(value: string): number | null {
+  const m = DURATION_RE.exec(value.trim().toLowerCase());
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const hours = !!m[2] && m[2].startsWith("h");
+  const mins = Math.round(hours ? n * 60 : n);
+  return mins > 0 ? mins : null;
+}
+
+/**
+ * Which bucket does a duration fall in?
+ *
+ * The levels are *ceilings* (light ≤3m, moderate ≤15m, heavy ≤60m, deep >60m),
+ * so a 30-minute task has to be `heavy` — classing it moderate would offer it
+ * up under a 15-minute budget, and a budget that lies is worse than no filter.
+ */
+export function effortFromMinutes(mins: number): Effort {
+  if (mins <= 3) return "light";
+  if (mins <= 15) return "moderate";
+  if (mins <= 60) return "heavy";
+  return "deep";
+}
+
+/**
+ * Effort as either a bucket word or a real duration.
+ *
+ * Morgen knows the actual number (`estimatedDuration: PT30M`) and the panel's
+ * "+ size" buttons only know the four buckets, so both forms exist on disk and
+ * both have to read. Minutes are the richer value — `[effort:: 30m]` says more
+ * than `heavy` and still filters identically.
+ */
 function normalizeEffort(value: string): Effort | null {
   const v = value.trim().toLowerCase();
   if (v === "light" || v === "moderate" || v === "heavy" || v === "deep") return v;
-  return null;
+  const mins = parseMinutes(v);
+  return mins === null ? null : effortFromMinutes(mins);
 }
 
 /**
@@ -288,15 +390,22 @@ export function parseTaskLine(
   const body = m[3];
   const fields = extractInlineFields(body);
 
-  const dueMatch = DUE_RE.exec(body);
-  const deferMatch = DEFER_RE.exec(body);
-  const doneMatch = DONE_DATE_RE.exec(body);
+  const due = readDate(fields["due"], DUE_RE, body);
+  const defer = readDate(fields["defer"], DEFER_RE, body);
+  const doneDate = readDate(fields["done"], DONE_DATE_RE, body);
 
   const pushesRaw = fields["pushes"];
   const pushesParsed = pushesRaw === undefined ? NaN : parseInt(pushesRaw, 10);
 
-  const priority = parsePriority(body);
+  // `[priority:: high]` beats ⏫ for the same reason a field beats an emoji
+  // date: it's the notation this version writes.
+  const priority =
+    (fields["priority"] !== undefined ? parsePriorityWord(fields["priority"]) : null) ??
+    parsePriority(body);
   const heading = context.heading ?? null;
+
+  const effortMinutes =
+    fields["effort"] !== undefined ? parseMinutes(fields["effort"]) : null;
 
   // Importance resolution, most specific first. An explicit `[important::]`
   // always wins — it's the one the user typed *at* this task, and the only one
@@ -335,11 +444,12 @@ export function parseTaskLine(
     heading,
     priority,
     importantFrom,
-    due: dueMatch ? parseDate(dueMatch[1]) : null,
-    defer: deferMatch ? parseDate(deferMatch[1]) : null,
-    doneDate: doneMatch ? parseDate(doneMatch[1]) : null,
+    due,
+    defer,
+    doneDate,
     dropped: fields["dropped"] ? parseDate(fields["dropped"]) : null,
     effort: fields["effort"] ? normalizeEffort(fields["effort"]) : null,
+    effortMinutes,
     pushes: Number.isFinite(pushesParsed) && pushesParsed > 0 ? pushesParsed : 0,
     project: fields["project"] || null,
     assigned: fields["assigned"] || null,
@@ -373,6 +483,7 @@ export function parseTasksFromContent(
   // Open task lines by indent depth, nearest ancestor last.
   const ancestry: SmartTask[] = [];
   let inFence = false;
+  let archived = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -389,8 +500,14 @@ export function parseTasksFromContent(
     if (headingMatch) {
       heading = cleanHeading(headingMatch[2]) || null;
       ancestry.length = 0; // a heading ends any list above it
+      archived = ARCHIVE_HEADING_RE.test(heading ?? "");
       continue;
     }
+
+    // Everything under `## Archive` is out of the plugin's sight. See
+    // ARCHIVE_HEADING_RE: the lines stay in the note, they just stop being
+    // tasks as far as the panel is concerned.
+    if (archived) continue;
 
     const task = parseTaskLine(lines[i], filePath, i, {
       heading,
