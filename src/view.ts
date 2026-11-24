@@ -1311,7 +1311,7 @@ export class SmartTodoView extends ItemView {
     if (isResting(task, today)) {
       meta.createSpan({
         cls: "stw-date is-defer",
-        text: `rests until ${this.humanDate(task.defer as Date, today)}`,
+        text: `deferred until ${this.humanDate(task.defer as Date, today)}`,
       });
     }
     if (task.pushes > 0) {
@@ -1346,7 +1346,7 @@ export class SmartTodoView extends ItemView {
         cls: "stw-icon-btn is-ghost",
         attr: {
           "aria-label": "Push to tomorrow — right-click for longer",
-          title: "Push to tomorrow (rests until then). Right-click for longer.",
+          title: "Push to tomorrow (defer until then). Right-click for longer.",
         },
       });
       setIcon(pushBtn, "chevrons-right");
@@ -1386,7 +1386,7 @@ export class SmartTodoView extends ItemView {
     if (ok) {
       const when = pushTargetDate(task, days);
       new Notice(
-        `Pushed to ${this.humanDate(when, startOfToday())} — resting until then, ` +
+        `Pushed to ${this.humanDate(when, startOfToday())} — deferred until then, ` +
           `so it's out of Do First.`,
         4000
       );

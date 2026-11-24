@@ -2118,7 +2118,7 @@ var EditTaskModal = class extends import_obsidian5.Modal {
       this.draft.due = date;
       dueInput.value = dateInputValue(date);
     });
-    const deferWrap = this.field(contentEl, "Rest until");
+    const deferWrap = this.field(contentEl, "Defer until");
     const deferInput = deferWrap.createEl("input", {
       cls: "smart-todo-edit-date",
       attr: { type: "date" }
@@ -3518,7 +3518,7 @@ var SmartTodoView = class extends import_obsidian8.ItemView {
     if (isResting(task, today)) {
       meta.createSpan({
         cls: "stw-date is-defer",
-        text: `rests until ${this.humanDate(task.defer, today)}`
+        text: `deferred until ${this.humanDate(task.defer, today)}`
       });
     }
     if (task.pushes > 0) {
@@ -3546,7 +3546,7 @@ var SmartTodoView = class extends import_obsidian8.ItemView {
         cls: "stw-icon-btn is-ghost",
         attr: {
           "aria-label": "Push to tomorrow \u2014 right-click for longer",
-          title: "Push to tomorrow (rests until then). Right-click for longer."
+          title: "Push to tomorrow (defer until then). Right-click for longer."
         }
       });
       (0, import_obsidian8.setIcon)(pushBtn, "chevrons-right");
@@ -3585,7 +3585,7 @@ var SmartTodoView = class extends import_obsidian8.ItemView {
     if (ok) {
       const when = pushTargetDate(task, days);
       new import_obsidian8.Notice(
-        `Pushed to ${this.humanDate(when, startOfToday())} \u2014 resting until then, so it's out of Do First.`,
+        `Pushed to ${this.humanDate(when, startOfToday())} \u2014 deferred until then, so it's out of Do First.`,
         4e3
       );
     }

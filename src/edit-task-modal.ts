@@ -206,7 +206,7 @@ export class EditTaskModal extends Modal {
       dueInput.value = dateInputValue(date);
     });
 
-    const deferWrap = this.field(contentEl, "Rest until");
+    const deferWrap = this.field(contentEl, "Defer until");
     const deferInput = deferWrap.createEl("input", {
       cls: "smart-todo-edit-date",
       attr: { type: "date" },
