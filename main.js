@@ -78,7 +78,7 @@ var MODES = [
 var HORIZONS = [
   { id: "today", label: "Today" },
   { id: "week", label: "This week" },
-  { id: "all", label: "Everything" },
+  { id: "all", label: "All" },
   { id: "done", label: "Done" }
 ];
 var QUADRANTS = [
@@ -2641,29 +2641,33 @@ var TaskSuggest = class extends import_obsidian8.EditorSuggest {
     );
     editor.setCursor({ line: start.line, ch: next.length });
     this.close();
-    this.warnIfUntracked(file);
+    void this.trackOnCapture(file);
   }
   /**
-   * A task Smart ToDo can't see is worse than no task.
+   * Capturing into a note tracks that note.
    *
-   * The menu fires in any note, so the likeliest place to use it is a daily
-   * note — which is exactly the kind of file nobody has added to scope. The
-   * line is real markdown either way; this only says where it will and won't
-   * appear, and offers the one-click fix.
+   * 0.12 only *warned* that an untracked note wouldn't show, with a link to fix
+   * it. That was wrong in practice: the task is written, the toast goes away,
+   * and what's left is a real markdown checkbox the panel silently refuses to
+   * list — which reads as the plugin being broken, and sends you to the search
+   * box to type the task a second time.
+   *
+   * Deliberately choosing "task" in this plugin's own menu *is* the request to
+   * manage it, so scope follows the capture. Announced and undoable, because it
+   * changes a setting the user didn't open.
    */
-  warnIfUntracked(file) {
+  async trackOnCapture(file) {
     if (!file || this.plugin.isInManagedScope(file.path))
       return;
+    await this.plugin.toggleTracked(file.path, { silent: true });
     const frag = document.createDocumentFragment();
-    frag.createDiv({
-      text: `Smart ToDo: added to ${file.basename}, which isn't tracked \u2014 it won't show in the panel.`
-    });
-    const link = frag.createEl("a", { text: "Track this note", href: "#" });
+    frag.createDiv({ text: `Now tracking ${file.basename}.` });
+    const link = frag.createEl("a", { text: "Undo", href: "#" });
     link.addEventListener("click", (evt) => {
       evt.preventDefault();
       void this.plugin.toggleTracked(file.path);
     });
-    new import_obsidian8.Notice(frag, 8e3);
+    new import_obsidian8.Notice(frag, 6e3);
   }
 };
 
@@ -2874,12 +2878,13 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
   }
   renderModeRow() {
     var _a2, _b;
-    const row = this.filtersEl.createDiv({ cls: "stw-row stw-modes" });
+    const row = this.filtersEl.createDiv({ cls: "stw-row stw-moderow" });
+    const caps = row.createDiv({ cls: "stw-modes" });
     for (const m of MODES) {
-      const btn = row.createEl("button", { cls: "stw-mode" });
+      const btn = caps.createEl("button", { cls: "stw-mode" });
+      (0, import_obsidian9.setTooltip)(btn, m.label, { placement: "bottom" });
       const ic = btn.createSpan({ cls: "stw-mode-icon" });
       (0, import_obsidian9.setIcon)(ic, m.icon);
-      btn.createSpan({ cls: "stw-mode-label", text: m.label });
       btn.createSpan({ cls: "stw-mode-count", text: String(this.countForMode(m.id)) });
       if (m.id === this.mode)
         btn.addClass("is-active");
@@ -2890,6 +2895,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       });
     }
     const when = row.createEl("button", { cls: "stw-when" });
+    (0, import_obsidian9.setTooltip)(when, "When", { placement: "bottom" });
     when.createSpan({
       text: (_b = (_a2 = HORIZONS.find((h) => h.id === this.horizon)) == null ? void 0 : _a2.label) != null ? _b : "Today"
     });
@@ -2915,7 +2921,6 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
    */
   renderBudgetRow() {
     const wrap = this.filtersEl.createDiv({ cls: "stw-budget-wrap" });
-    wrap.createDiv({ cls: "stw-row-label", text: "I have\u2026" });
     const row = wrap.createDiv({ cls: "stw-row stw-budgets" });
     for (const b of BUDGETS) {
       const count = this.listTasks.filter(
@@ -4222,16 +4227,20 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
    * also means untracking is free — it only stops the scan, it never touches
    * the note.
    */
-  async toggleTracked(path) {
+  async toggleTracked(path, opts = {}) {
     var _a2;
     if (samePath(path, this.primaryFile)) {
-      new import_obsidian11.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
+      if (!opts.silent) {
+        new import_obsidian11.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
+      }
       return;
     }
     const tracked = scopeIncludesPath(this.settings.managedFiles, path, this.scopeOptions);
     this.settings.managedFiles = tracked ? removePathFromScope(this.settings.managedFiles, path, this.scopeOptions) : addPathToScope(this.settings.managedFiles, path);
     await this.saveSettings();
     this.refreshViews();
+    if (opts.silent)
+      return;
     const name = (_a2 = path.split("/").pop()) != null ? _a2 : path;
     if (tracked) {
       new import_obsidian11.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);

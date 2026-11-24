@@ -157,7 +157,7 @@ export type Horizon = "today" | "week" | "all" | "done";
 export const HORIZONS: Array<{ id: Horizon; label: string }> = [
   { id: "today", label: "Today" },
   { id: "week", label: "This week" },
-  { id: "all", label: "Everything" },
+  { id: "all", label: "All" },
   { id: "done", label: "Done" },
 ];
 

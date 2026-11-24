@@ -217,29 +217,34 @@ export class TaskSuggest extends EditorSuggest<SuggestItem> {
     editor.setCursor({ line: start.line, ch: next.length });
 
     this.close();
-    this.warnIfUntracked(file);
+    void this.trackOnCapture(file);
   }
 
   /**
-   * A task Smart ToDo can't see is worse than no task.
+   * Capturing into a note tracks that note.
    *
-   * The menu fires in any note, so the likeliest place to use it is a daily
-   * note — which is exactly the kind of file nobody has added to scope. The
-   * line is real markdown either way; this only says where it will and won't
-   * appear, and offers the one-click fix.
+   * 0.12 only *warned* that an untracked note wouldn't show, with a link to fix
+   * it. That was wrong in practice: the task is written, the toast goes away,
+   * and what's left is a real markdown checkbox the panel silently refuses to
+   * list — which reads as the plugin being broken, and sends you to the search
+   * box to type the task a second time.
+   *
+   * Deliberately choosing "task" in this plugin's own menu *is* the request to
+   * manage it, so scope follows the capture. Announced and undoable, because it
+   * changes a setting the user didn't open.
    */
-  private warnIfUntracked(file: TFile | null): void {
+  private async trackOnCapture(file: TFile | null): Promise<void> {
     if (!file || this.plugin.isInManagedScope(file.path)) return;
 
+    await this.plugin.toggleTracked(file.path, { silent: true });
+
     const frag = document.createDocumentFragment();
-    frag.createDiv({
-      text: `Smart ToDo: added to ${file.basename}, which isn't tracked — it won't show in the panel.`,
-    });
-    const link = frag.createEl("a", { text: "Track this note", href: "#" });
+    frag.createDiv({ text: `Now tracking ${file.basename}.` });
+    const link = frag.createEl("a", { text: "Undo", href: "#" });
     link.addEventListener("click", (evt) => {
       evt.preventDefault();
       void this.plugin.toggleTracked(file.path);
     });
-    new Notice(frag, 8000);
+    new Notice(frag, 6000);
   }
 }

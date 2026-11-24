@@ -19,7 +19,7 @@
 // Rows are shared across all three, so a task looks and behaves identically
 // wherever you meet it.
 
-import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
 import {
   PanelQuery,
   SourceGroup,
@@ -330,12 +330,18 @@ export class SmartTodoView extends ItemView {
   }
 
   private renderModeRow(): void {
-    const row = this.filtersEl.createDiv({ cls: "stw-row stw-modes" });
+    // The capsule holds only the toggles. The When menu is a sibling, not a
+    // segment — it used to sit inside the grey strip and read as a fourth mode.
+    const row = this.filtersEl.createDiv({ cls: "stw-row stw-moderow" });
+    const caps = row.createDiv({ cls: "stw-modes" });
     for (const m of MODES) {
-      const btn = row.createEl("button", { cls: "stw-mode" });
+      // Icon and count only. Three modes with their names spelled out ate the
+      // width of a 280px sidebar and truncated to "Fo… Sw… La…", which is
+      // worse than no label at all — the glyph was already doing the work.
+      const btn = caps.createEl("button", { cls: "stw-mode" });
+      setTooltip(btn, m.label, { placement: "bottom" });
       const ic = btn.createSpan({ cls: "stw-mode-icon" });
       setIcon(ic, m.icon);
-      btn.createSpan({ cls: "stw-mode-label", text: m.label });
       btn.createSpan({ cls: "stw-mode-count", text: String(this.countForMode(m.id)) });
       if (m.id === this.mode) btn.addClass("is-active");
       btn.addEventListener("click", () => {
@@ -345,8 +351,12 @@ export class SmartTodoView extends ItemView {
       });
     }
 
-    // "When" — the seven old tabs, collapsed into one menu button.
+    // "When" — the seven old tabs, collapsed into one menu. Deliberately not a
+    // pill: the pills to its left are toggles that commit on click, this one
+    // opens a menu, and a control that behaves differently should look
+    // different.
     const when = row.createEl("button", { cls: "stw-when" });
+    setTooltip(when, "When", { placement: "bottom" });
     when.createSpan({
       text: HORIZONS.find((h) => h.id === this.horizon)?.label ?? "Today",
     });
@@ -378,8 +388,9 @@ export class SmartTodoView extends ItemView {
    * useful fact.
    */
   private renderBudgetRow(): void {
+    // No "I have…" caption: "3 min / 15 min / 1 hour" already says what the row
+    // is, and the caption cost a whole line of a narrow panel to say it twice.
     const wrap = this.filtersEl.createDiv({ cls: "stw-budget-wrap" });
-    wrap.createDiv({ cls: "stw-row-label", text: "I have…" });
     const row = wrap.createDiv({ cls: "stw-row stw-budgets" });
 
     for (const b of BUDGETS) {

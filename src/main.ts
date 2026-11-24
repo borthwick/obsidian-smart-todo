@@ -271,9 +271,11 @@ export default class SmartTodoPlugin extends Plugin {
    * also means untracking is free — it only stops the scan, it never touches
    * the note.
    */
-  async toggleTracked(path: string): Promise<void> {
+  async toggleTracked(path: string, opts: { silent?: boolean } = {}): Promise<void> {
     if (samePath(path, this.primaryFile)) {
-      new Notice("Smart ToDo: this is the main task file — it's always tracked.", 4000);
+      if (!opts.silent) {
+        new Notice("Smart ToDo: this is the main task file — it's always tracked.", 4000);
+      }
       return;
     }
 
@@ -283,6 +285,7 @@ export default class SmartTodoPlugin extends Plugin {
       : addPathToScope(this.settings.managedFiles, path);
     await this.saveSettings();
     this.refreshViews();
+    if (opts.silent) return;
 
     const name = path.split("/").pop() ?? path;
     if (tracked) {

@@ -221,29 +221,42 @@
   color: var(--text-faint);
 }
 
-/* --- Modes: the only segmented control in the panel ------------------- */
+/* --- Modes: a capsule segmented control ------------------------------
+ *
+ * Icon + count, no word — the name is a tooltip. Three spelled-out labels and
+ * three counts did not fit a 280px sidebar and truncated to "Fo… Sw… La…",
+ * which is a label that has stopped being a label. Fully-round capsule, the
+ * shape iOS uses for exactly this control, so the toggles read as toggles and
+ * the one menu next to them can look like a menu.
+ */
 
+.stw-moderow {
+  flex-wrap: nowrap;
+}
 .stw-modes {
+  display: inline-flex;
+  align-items: center;
   gap: 0;
   padding: 2px;
-  border-radius: var(--radius-m);
+  border-radius: 999px;
   background: var(--background-modifier-hover);
+  flex: 0 0 auto;
 }
 
 .stw-mode {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  flex: 1 1 0;
+  gap: 4px;
   min-width: 0;
   justify-content: center;
-  padding: var(--size-2-2);
+  padding: 3px var(--size-2-3);
   border: none;
-  border-radius: var(--radius-s);
+  border-radius: 999px;
   background: transparent;
   box-shadow: none;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
+  line-height: 1;
   cursor: pointer;
 }
 .stw-mode:hover {
@@ -252,7 +265,6 @@
 .stw-mode.is-active {
   background: var(--background-primary);
   color: var(--stw-accent);
-  font-weight: var(--font-semibold);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 .stw-mode-icon {
@@ -260,13 +272,8 @@
   flex: 0 0 auto;
 }
 .stw-mode-icon .svg-icon {
-  width: 13px;
-  height: 13px;
-}
-.stw-mode-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: 14px;
+  height: 14px;
 }
 .stw-mode-count {
   font-variant-numeric: tabular-nums;
@@ -277,25 +284,31 @@
   color: var(--stw-accent);
 }
 
-/* --- "When": a menu, not a tab strip --------------------------------- */
+/* --- "When": a menu, so not a pill ------------------------------------
+ *
+ * Borderless text plus a caret. Everything else in these rows commits on
+ * click; this one opens a menu, and giving it the same capsule as the toggles
+ * was the reason it kept getting pressed like one.
+ */
 
 .stw-when {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-top: var(--size-2-3);
-  padding: var(--size-2-1) var(--size-2-3);
-  border: 1px solid var(--background-modifier-border);
+  gap: 2px;
+  margin-left: auto;
+  padding: 3px var(--size-2-1) 3px var(--size-2-2);
+  border: none;
   border-radius: var(--radius-s);
-  background: var(--background-primary);
+  background: transparent;
   box-shadow: none;
   font-size: var(--font-ui-smaller);
+  line-height: 1;
   color: var(--text-muted);
   cursor: pointer;
 }
 .stw-when:hover {
   color: var(--text-normal);
-  border-color: var(--text-faint);
+  background: var(--background-modifier-hover);
 }
 .stw-when-caret {
   display: inline-flex;
@@ -306,19 +319,20 @@
   height: 12px;
 }
 
-/* --- Budget chips: "I have… 3 min / 15 min / 1 hour / Any" ------------ */
+/* --- Budget pills: "3 min / 15 min / 1 hour / Any" -------------------- */
 
 .stw-budget-wrap {
-  margin-top: var(--size-2-1);
+  margin-top: var(--size-2-2);
 }
 
 .stw-budget {
   display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  padding: var(--size-2-2) var(--size-2-3);
+  gap: 4px;
+  padding: 3px var(--size-2-3);
   border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
+  border-radius: 999px;
+  line-height: 1.3;
   background: var(--background-primary);
   box-shadow: none;
   font-size: var(--font-ui-smaller);
@@ -354,13 +368,14 @@
 /* --- Category chips -------------------------------------------------- */
 
 .stw-cats {
-  margin-top: var(--size-2-3);
+  margin-top: var(--size-2-2);
 }
 
 .stw-cat {
-  padding: var(--size-2-1) var(--size-2-3);
+  padding: 3px var(--size-2-3);
   border: 1px solid transparent;
-  border-radius: var(--radius-s);
+  border-radius: 999px;
+  line-height: 1.3;
   background: transparent;
   box-shadow: none;
   font-size: var(--font-ui-smaller);
@@ -379,7 +394,8 @@
 /* Category colour appears as a left rule rather than a dot: in a chip this
    narrow a dot reads as a bullet and steals the first character's space. */
 .stw-cat.has-color.is-active {
-  box-shadow: inset 2px 0 0 var(--cat-color);
+  background: var(--cat-color);
+  color: #fff;
 }
 
 /* ======================================================================
