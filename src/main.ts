@@ -86,7 +86,7 @@ export default class SmartTodoPlugin extends Plugin {
 
     this.addSettingTab(new SmartTodoSettingTab(this.app, this));
 
-    this.addRibbonIcon("list-checks", "Smart ToDo: Today", () => {
+    this.addRibbonIcon(SPIRAL_ICON_ID, "Smart ToDo: Today", () => {
       void this.activateView();
     });
 
@@ -161,7 +161,7 @@ export default class SmartTodoPlugin extends Plugin {
         menu.addItem((item) =>
           item
             .setTitle(tracked ? "Smart ToDo: stop tracking tasks here" : "Smart ToDo: track tasks in this note")
-            .setIcon("list-checks")
+            .setIcon(SPIRAL_ICON_ID)
             .onClick(() => void this.toggleTracked(file.path))
         );
       })

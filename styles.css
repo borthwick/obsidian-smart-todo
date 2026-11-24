@@ -11,6 +11,22 @@
  * nothing is wider than its container.
  */
 
+/* The spiral, in three states.
+ *
+ * One shape, three colours — not three shapes. A single glyph that changes
+ * colour is a vocabulary you read; a set of different glyphs is a legend you
+ * memorise. Same reason the emoji notation went.
+ *
+ * Declared on :root, not on .smart-todo-root, because the `/` menu is appended
+ * to the body outside the view and would otherwise see none of these.
+ * Plain deliberately has no colour: it inherits, so an unjudged task stays
+ * quiet.
+ */
+:root {
+  --stw-important: #70a7e3;
+  --stw-urgent: #b65259;
+}
+
 .smart-todo-root {
   /* Overridden inline from ACCENTS[settings.accent]; these are the blue
      defaults so the panel still looks right if the inline set ever fails. */
@@ -532,7 +548,7 @@
 /* Overdue gets a hairline, not a red row. One red row is a warning; six red
    rows are wallpaper. */
 .stw-row-task.is-overdue {
-  box-shadow: inset 2px 0 0 var(--text-error);
+  box-shadow: inset 2px 0 0 var(--stw-urgent);
 }
 
 .stw-check {
@@ -730,11 +746,11 @@
   height: 14px;
 }
 .stw-star.is-yes {
-  color: var(--text-accent);
+  color: var(--stw-important);
 }
 .stw-star.is-no {
   color: var(--text-faint);
-  opacity: 0.5;
+  opacity: 0.4;
 }
 /* Unjudged is visible but unalarming — it's a prompt, not an error. */
 .stw-star.is-unjudged {
@@ -1534,21 +1550,19 @@
 }
 .smart-todo-suggest-icon {
   display: flex;
-  color: var(--stw-accent);
   flex: 0 0 auto;
+}
+.smart-todo-suggest-icon.is-important {
+  color: var(--stw-important);
+}
+.smart-todo-suggest-icon.is-urgent {
+  color: var(--stw-urgent);
 }
 .smart-todo-suggest-icon .svg-icon {
   width: 16px;
   height: 16px;
 }
-.smart-todo-suggest-text {
-  min-width: 0;
-}
 .smart-todo-suggest-title {
   line-height: 1.3;
-}
-.smart-todo-suggest-hint {
-  color: var(--text-muted);
-  font-size: var(--font-smaller);
-  line-height: 1.3;
+  min-width: 0;
 }

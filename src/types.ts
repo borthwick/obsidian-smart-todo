@@ -261,12 +261,14 @@ export function quadrantFor(urgent: boolean, important: boolean): Quadrant {
 /**
  * HSL accent per quadrant, for the colored pill and the section rule.
  *
- * Tuned to OmniFocus's own vocabulary so the panel reads as the same family as
- * the list it replaces: overdue red, flagged orange, deferred indigo, and a
- * plain grey for the pile you've stopped caring about.
+ * Urgent red is #B65259 — the same red the spiral uses for the `/` menu's
+ * urgent row and for the overdue hairline, so the panel has one red and it
+ * always means the same thing. The rest keeps OmniFocus's vocabulary: flagged
+ * orange to hand off, deferred indigo to plan, grey for the pile you've
+ * stopped caring about.
  */
 export const QUADRANT_COLOR: Record<Quadrant, string> = {
-  do: "hsl(3, 72%, 56%)", // OmniFocus overdue red — fire
+  do: "#b65259", // urgent red — fire
   schedule: "hsl(240, 18%, 51%)", // #6B6B99 — plan
   delegate: "hsl(36, 100%, 48%)", // OmniFocus flag orange — hand off
   drop: "hsl(220, 9%, 55%)", // grey — let go

@@ -1297,7 +1297,13 @@ console.log("\n[tracked notes fold under their own heading]");
 
 console.log("\n=== INLINE / MENU ===");
 {
-  const { triggerQuery, applyAction } = mod.suggest;
+  const { triggerQuery, applyAction, ACTIONS } = mod.suggest;
+
+  // The three rows, verbatim as John specified them. One line each, lowercase,
+  // no verb — the menu is the whole explanation.
+  check("row labels", ACTIONS.map((a) => a.label).join(" | "),
+    "task, triage later | important | urgent (due in two days)");
+  check("no second line on any row", ACTIONS.every((a) => !("hint" in a)), true);
 
   // Fires: there is a sentence in front of the slash.
   check("fires at the end of a line", triggerQuery("this is a test task/"), "");

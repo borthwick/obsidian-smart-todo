@@ -38,43 +38,39 @@ export type TaskActionId = "plain" | "important" | "urgent";
 
 interface TaskAction {
   id: TaskActionId;
-  /** Label when the line still has to become a task. */
-  create: string;
-  /** Label when the line is already a checkbox. */
-  amend: string;
-  hint: string;
+  /**
+   * The whole row. One line, lowercase, no verb and no second line of
+   * explanation — the menu is three choices deep and the spiral's colour
+   * already says which one you're on.
+   */
+  label: string;
   /** Words the typed query is matched against. */
   keywords: string[];
 }
 
-const ACTIONS: TaskAction[] = [
+/** `2` → `two`, so the label reads as a sentence. Falls back to digits. */
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
+const urgentWindow = NUMBER_WORDS[URGENT_WINDOW_DAYS] ?? String(URGENT_WINDOW_DAYS);
+
+export const ACTIONS: TaskAction[] = [
   {
     id: "plain",
-    create: "Add task",
-    amend: "Leave as a plain task",
-    hint: "No judgment — triage it later",
-    keywords: ["add", "task", "todo", "plain"],
+    label: "task, triage later",
+    keywords: ["add", "task", "todo", "plain", "triage"],
   },
   {
     id: "important",
-    create: "Add as important",
-    amend: "Mark as important",
-    hint: "Do First, once it's also urgent",
+    label: "important",
     keywords: ["important", "priority", "high", "matters"],
   },
   {
     id: "urgent",
-    create: `Add as urgent (due in ${URGENT_WINDOW_DAYS} days)`,
-    amend: `Make urgent (due in ${URGENT_WINDOW_DAYS} days)`,
-    hint: "Urgency is the due date — nothing else sets it",
+    label: `urgent (due in ${urgentWindow} days)`,
     keywords: ["urgent", "due", "soon", "now", "today"],
   },
 ];
 
-interface SuggestItem extends TaskAction {
-  /** Resolved for this line, so the row can't promise the wrong verb. */
-  label: string;
-}
+type SuggestItem = TaskAction;
 
 /**
  * The Smart ToDo mark, drawn on every row.
@@ -190,22 +186,17 @@ export class TaskSuggest extends EditorSuggest<SuggestItem> {
   }
 
   getSuggestions(context: EditorSuggestContext): SuggestItem[] {
-    const line = context.editor.getLine(context.start.line);
-    const isTask = TASK_PREFIX_RE.test(line);
     const q = context.query.toLowerCase();
-
     return ACTIONS.filter(
       (a) => !q || a.keywords.some((k) => k.startsWith(q)) || a.id.startsWith(q)
-    ).map((a) => ({ ...a, label: isTask ? a.amend : a.create }));
+    );
   }
 
   renderSuggestion(item: SuggestItem, el: HTMLElement): void {
     el.addClass("smart-todo-suggest");
-    const icon = el.createSpan({ cls: "smart-todo-suggest-icon" });
+    const icon = el.createSpan({ cls: `smart-todo-suggest-icon is-${item.id}` });
     setIcon(icon, SPIRAL_ICON_ID);
-    const text = el.createDiv({ cls: "smart-todo-suggest-text" });
-    text.createDiv({ cls: "smart-todo-suggest-title", text: item.label });
-    text.createDiv({ cls: "smart-todo-suggest-hint", text: item.hint });
+    el.createDiv({ cls: "smart-todo-suggest-title", text: item.label });
   }
 
   selectSuggestion(item: SuggestItem): void {

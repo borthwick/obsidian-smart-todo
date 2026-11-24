@@ -84,6 +84,7 @@ import {
 import { EditTaskModal } from "./edit-task-modal";
 import { SweepModal } from "./sweep-modal";
 import { QuickAction, QuickSwitchModal } from "./quick-switch";
+import { SPIRAL_ICON_ID } from "./task-suggest";
 import type SmartTodoPlugin from "./main";
 
 export class SmartTodoView extends ItemView {
@@ -120,7 +121,7 @@ export class SmartTodoView extends ItemView {
   }
 
   getIcon(): string {
-    return "list-checks";
+    return SPIRAL_ICON_ID;
   }
 
   async onOpen(): Promise<void> {
@@ -1430,19 +1431,17 @@ export class SmartTodoView extends ItemView {
    * "important" axis; urgency is always derived from the due date.
    */
   private renderImportanceToggle(parent: HTMLElement, task: SmartTask): void {
+    // One glyph, three states — the same spiral the `/` menu offers, so the
+    // thing you picked while typing is the thing you see in the list.
     const state = task.important === true ? "yes" : task.important === false ? "no" : "unjudged";
     const star = parent.createSpan({
       cls: `stw-star is-${state}`,
       attr: {
         "aria-label":
-          state === "yes"
-            ? "Important — click to mark not important"
-            : state === "no"
-              ? "Not important — click to clear"
-              : "Importance not set — click to mark important",
+          state === "yes" ? "important" : state === "no" ? "not important" : "set importance",
       },
     });
-    setIcon(star, state === "yes" ? "star" : state === "no" ? "star-off" : "help-circle");
+    setIcon(star, SPIRAL_ICON_ID);
 
     star.addEventListener("click", (evt) => {
       evt.stopPropagation();
