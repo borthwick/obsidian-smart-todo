@@ -33,7 +33,12 @@ writeFileSync(
    // The migration preview lives in categorize.ts next to its planner; the
    // planner is pure, so a hollow Modal is enough to let the module load.
    class Modal { constructor(app) { this.app = app; } }
-   module.exports = { Notice, TFile, Modal };\n`
+   // The inline / menu subclasses EditorSuggest; only its pure line-rewriting
+   // helpers are under test, so a hollow base class is enough to let it load.
+   class EditorSuggest { constructor(app) { this.app = app; } }
+   const setIcon = () => {};
+   const addIcon = () => {};
+   module.exports = { Notice, TFile, Modal, EditorSuggest, setIcon, addIcon };\n`
 );
 
 await esbuild.build({
@@ -45,6 +50,7 @@ await esbuild.build({
       export * as scope from "./src/scope";
       export * as types from "./src/types";
       export * as categorize from "./src/categorize";
+      export * as suggest from "./src/task-suggest";
     `,
     resolveDir: repo,
     loader: "ts",
@@ -1287,6 +1293,66 @@ console.log("\n[tracked notes fold under their own heading]");
   check("and the file is clean again", parseTasksFromContent(secondSweep.content, "T.md").length, 0);
 
   check("an empty sweep is a no-op", buildArchivedContent(BACKLOG, []).content, BACKLOG);
+}
+
+console.log("\n=== INLINE / MENU ===");
+{
+  const { triggerQuery, applyAction } = mod.suggest;
+
+  // Fires: there is a sentence in front of the slash.
+  check("fires at the end of a line", triggerQuery("this is a test task/"), "");
+  check("carries the typed filter", triggerQuery("call the vet/imp"), "imp");
+  check("fires inside an existing task", triggerQuery("- [ ] call the vet/"), "");
+
+  // Refuses: the slash means something else. Each of these is a menu that
+  // would otherwise cover text mid-sentence.
+  check("not on a bare slash", triggerQuery("/"), null);
+  check("not on an empty line", triggerQuery("   /"), null);
+  check("not in a date", triggerQuery("due 11/"), null);
+  check("not in a URL", triggerQuery("see https://"), null);
+  check("not in a path", triggerQuery("open src/main.ts/"), null);
+  check("not after a word boundary slash", triggerQuery("and/or/"), null);
+
+  const today = new Date(2026, 10, 24);
+
+  // Plain text becomes a task; a bullet keeps its bullet; a task keeps itself.
+  check("plain line becomes a task", applyAction("get the milk", "plain", today), "- [ ] get the milk");
+  check("a bullet gains a checkbox", applyAction("- get the milk", "plain", today), "- [ ] get the milk");
+  check("indent survives", applyAction("    - get the milk", "plain", today), "    - [ ] get the milk");
+  check("a numbered item keeps its number", applyAction("1. get the milk", "plain", today), "1. [ ] get the milk");
+  check("an existing task is left alone", applyAction("- [ ] get the milk", "plain", today), "- [ ] get the milk");
+  check("a done task is not reopened", applyAction("- [x] get the milk", "plain", today), "- [x] get the milk");
+
+  check(
+    "important writes a word, not an emoji",
+    applyAction("get the milk", "important", today),
+    "- [ ] get the milk [important:: true]"
+  );
+  check(
+    "urgent is a due date two days out",
+    applyAction("get the milk", "urgent", today),
+    "- [ ] get the milk [due:: 2026-11-26]"
+  );
+  check(
+    "an existing due date is replaced, not duplicated",
+    applyAction("- [ ] pay tax [due:: 2026-12-31]", "urgent", today),
+    "- [ ] pay tax [due:: 2026-11-26]"
+  );
+  check(
+    "marking important leaves other fields intact",
+    applyAction("- [ ] pay tax [effort:: moderate]", "important", today),
+    "- [ ] pay tax [effort:: moderate] [important:: true]"
+  );
+
+  // The whole point of the vocabulary change: nothing here emits emoji.
+  const written = ["plain", "important", "urgent"].map((a) => applyAction("x", a, today)).join(" ");
+  check("no emoji written anywhere", /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(written), false);
+
+  // And what it writes has to be readable by the thing that reads tasks.
+  const roundTrip = parseTasksFromContent(applyAction("get the milk", "urgent", today), "T.md");
+  check("the line parses back as one task", roundTrip.length, 1);
+  check("with the due date it claimed", d(roundTrip[0]?.due), "2026-11-26");
+  check("and a clean title", roundTrip[0]?.title, "get the milk");
 }
 
 console.log(

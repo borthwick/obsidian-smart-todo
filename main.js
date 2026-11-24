@@ -22,7 +22,7 @@ __export(main_exports, {
   default: () => SmartTodoPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 
 // src/types.ts
 var PRIORITY_MARK = {
@@ -142,7 +142,8 @@ var DEFAULT_SETTINGS = {
   weekStart: "sunday",
   importantHeadings: [...DEFAULT_IMPORTANT_HEADINGS],
   groupByHeading: true,
-  metadataChips: true
+  metadataChips: true,
+  inlineSuggest: "everywhere"
 };
 var CATEGORIES = ["betaworks", "personal", "health"];
 var CATEGORY_LABEL = {
@@ -1013,6 +1014,21 @@ var SmartTodoSettingTab = class extends import_obsidian2.PluginSettingTab {
         this.plugin.settings.metadataChips = v;
         await this.plugin.saveSettings();
       })
+    );
+    new import_obsidian2.Setting(el).setName("Inline / menu").setDesc(
+      'Type a line, then "/" at the end of it, to turn it into a task \u2014 plain, important, or due in two days (which is what makes it urgent). It fires on a bare keystroke, so restrict or disable it here.'
+    ).addDropdown(
+      (d) => {
+        var _a2;
+        return d.addOptions({
+          everywhere: "Every note",
+          tracked: "Tracked notes only",
+          off: "Off"
+        }).setValue((_a2 = this.plugin.settings.inlineSuggest) != null ? _a2 : "everywhere").onChange(async (v) => {
+          this.plugin.settings.inlineSuggest = v;
+          await this.plugin.saveSettings();
+        });
+      }
     );
     const accentSetting = new import_obsidian2.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
     const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
@@ -3867,9 +3883,173 @@ var CategoryMigrationModal = class extends import_obsidian9.Modal {
   }
 };
 
+// src/task-suggest.ts
+var import_obsidian10 = require("obsidian");
+var TASK_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[.\]\s*)/;
+var BULLET_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)/;
+var INDENT_RE = /^(\s*)/;
+var ACTIONS = [
+  {
+    id: "plain",
+    create: "Add task",
+    amend: "Leave as a plain task",
+    hint: "No judgment \u2014 triage it later",
+    keywords: ["add", "task", "todo", "plain"]
+  },
+  {
+    id: "important",
+    create: "Add as important",
+    amend: "Mark as important",
+    hint: "Do First, once it's also urgent",
+    keywords: ["important", "priority", "high", "matters"]
+  },
+  {
+    id: "urgent",
+    create: `Add as urgent (due in ${URGENT_WINDOW_DAYS} days)`,
+    amend: `Make urgent (due in ${URGENT_WINDOW_DAYS} days)`,
+    hint: "Urgency is the due date \u2014 nothing else sets it",
+    keywords: ["urgent", "due", "soon", "now", "today"]
+  }
+];
+var SPIRAL_ICON_ID = "smart-todo-spiral";
+var SPIRAL_ICON_SVG = `<g transform="scale(4.1667)" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12 m 0 0 c 0.5 0 1 0 1 -1 c 0 -1.5 -1.5 -1.5 -2 -1 c -1.5 1 -1.5 3.5 0.5 4 c 3 0.5 4 -3 2 -5 c -3 -3 -7 0 -6 4 c 1 5 8 6 10 1 c 2 -5 -3 -11 -9 -9 c -6 2 -6 10 0 12" /></g>`;
+function triggerQuery(lineUpToCursor) {
+  var _a, _b, _c, _d;
+  const m = /\/([A-Za-z]*)$/.exec(lineUpToCursor);
+  if (!m)
+    return null;
+  const slashAt = lineUpToCursor.length - m[0].length;
+  const before = lineUpToCursor.slice(0, slashAt);
+  if (!before.trim())
+    return null;
+  const prev = (_a = before.at(-1)) != null ? _a : "";
+  if (prev === "/" || prev === ":" || prev === ".")
+    return null;
+  const word = (_c = (_b = /\S*$/.exec(lineUpToCursor)) == null ? void 0 : _b[0]) != null ? _c : "";
+  if (((_d = word.match(/\//g)) != null ? _d : []).length > 1)
+    return null;
+  if (/\d\s*$/.test(before))
+    return null;
+  if (/https?:$|\]\($/.test(before.trimEnd()))
+    return null;
+  return m[1];
+}
+function inVerbatimRegion(editor, line) {
+  let fenced = false;
+  for (let i = 0; i < line; i++) {
+    const text = editor.getLine(i);
+    if (/^\s*(```|~~~)/.test(text))
+      fenced = !fenced;
+    if (i === 0 && text.trim() === "---")
+      fenced = true;
+    else if (fenced && i > 0 && text.trim() === "---" && editor.getLine(0).trim() === "---") {
+      fenced = false;
+    }
+  }
+  return fenced;
+}
+function applyAction(line, action, today = startOfToday()) {
+  var _a, _b;
+  let body = line.replace(/\s+$/, "");
+  if (!TASK_PREFIX_RE.test(body)) {
+    const bullet = BULLET_PREFIX_RE.exec(body);
+    if (bullet) {
+      body = `${bullet[1]}[ ] ${body.slice(bullet[1].length)}`;
+    } else {
+      const indent = (_b = (_a = INDENT_RE.exec(body)) == null ? void 0 : _a[1]) != null ? _b : "";
+      body = `${indent}- [ ] ${body.slice(indent.length)}`;
+    }
+  }
+  if (action === "important")
+    return setInlineField(body, "important", "true");
+  if (action === "urgent") {
+    return setInlineField(body, "due", formatDate(addDays(today, URGENT_WINDOW_DAYS)));
+  }
+  return body;
+}
+var TaskSuggest = class extends import_obsidian10.EditorSuggest {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+  onTrigger(cursor, editor, file) {
+    const mode = this.plugin.settings.inlineSuggest;
+    if (mode === "off")
+      return null;
+    if (mode === "tracked" && !(file && this.plugin.isInManagedScope(file.path)))
+      return null;
+    const upToCursor = editor.getLine(cursor.line).slice(0, cursor.ch);
+    const query = triggerQuery(upToCursor);
+    if (query === null)
+      return null;
+    if (inVerbatimRegion(editor, cursor.line))
+      return null;
+    return {
+      start: { line: cursor.line, ch: cursor.ch - query.length - 1 },
+      end: cursor,
+      query
+    };
+  }
+  getSuggestions(context) {
+    const line = context.editor.getLine(context.start.line);
+    const isTask = TASK_PREFIX_RE.test(line);
+    const q = context.query.toLowerCase();
+    return ACTIONS.filter(
+      (a) => !q || a.keywords.some((k) => k.startsWith(q)) || a.id.startsWith(q)
+    ).map((a) => ({ ...a, label: isTask ? a.amend : a.create }));
+  }
+  renderSuggestion(item, el) {
+    el.addClass("smart-todo-suggest");
+    const icon = el.createSpan({ cls: "smart-todo-suggest-icon" });
+    (0, import_obsidian10.setIcon)(icon, SPIRAL_ICON_ID);
+    const text = el.createDiv({ cls: "smart-todo-suggest-text" });
+    text.createDiv({ cls: "smart-todo-suggest-title", text: item.label });
+    text.createDiv({ cls: "smart-todo-suggest-hint", text: item.hint });
+  }
+  selectSuggestion(item) {
+    const ctx = this.context;
+    if (!ctx)
+      return;
+    const { editor, start, end, file } = ctx;
+    const line = editor.getLine(start.line);
+    const stripped = line.slice(0, start.ch) + line.slice(end.ch);
+    const next = applyAction(stripped, item.id);
+    editor.replaceRange(
+      next,
+      { line: start.line, ch: 0 },
+      { line: start.line, ch: line.length }
+    );
+    editor.setCursor({ line: start.line, ch: next.length });
+    this.close();
+    this.warnIfUntracked(file);
+  }
+  /**
+   * A task Smart ToDo can't see is worse than no task.
+   *
+   * The menu fires in any note, so the likeliest place to use it is a daily
+   * note — which is exactly the kind of file nobody has added to scope. The
+   * line is real markdown either way; this only says where it will and won't
+   * appear, and offers the one-click fix.
+   */
+  warnIfUntracked(file) {
+    if (!file || this.plugin.isInManagedScope(file.path))
+      return;
+    const frag = document.createDocumentFragment();
+    frag.createDiv({
+      text: `Smart ToDo: added to ${file.basename}, which isn't tracked \u2014 it won't show in the panel.`
+    });
+    const link = frag.createEl("a", { text: "Track this note", href: "#" });
+    link.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      void this.plugin.toggleTracked(file.path);
+    });
+    new import_obsidian10.Notice(frag, 8e3);
+  }
+};
+
 // src/main.ts
 var REFRESH_DEBOUNCE_MS = 250;
-var SmartTodoPlugin = class extends import_obsidian10.Plugin {
+var SmartTodoPlugin = class extends import_obsidian11.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -3887,8 +4067,10 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
   async onload() {
     await this.loadSettings();
     this.applyAccent();
+    (0, import_obsidian11.addIcon)(SPIRAL_ICON_ID, SPIRAL_ICON_SVG);
     this.registerEditorExtension(this.editorExtensions);
     this.applyChipExtension();
+    this.registerEditorSuggest(new TaskSuggest(this.app, this));
     this.registerView(
       VIEW_TYPE_SMART_TODO,
       (leaf) => new SmartTodoView(leaf, this)
@@ -3927,7 +4109,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
       callback: () => {
         void this.withView((view) => {
           if (!view.sweepNow()) {
-            new import_obsidian10.Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4e3);
+            new import_obsidian11.Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4e3);
           }
         });
       }
@@ -3947,7 +4129,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
     });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian10.TFile) || file.extension !== "md")
+        if (!(file instanceof import_obsidian11.TFile) || file.extension !== "md")
           return;
         if (samePath(file.path, this.primaryFile))
           return;
@@ -3980,7 +4162,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
     });
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian10.TFile && this.isInManagedScope(file.path)) {
+        if (file instanceof import_obsidian11.TFile && this.isInManagedScope(file.path)) {
           this.scheduleRefresh();
         }
       })
@@ -4050,7 +4232,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
   async toggleTracked(path) {
     var _a;
     if (samePath(path, this.primaryFile)) {
-      new import_obsidian10.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
+      new import_obsidian11.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
       return;
     }
     const tracked = scopeIncludesPath(this.settings.managedFiles, path, this.scopeOptions);
@@ -4059,14 +4241,14 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
     this.refreshViews();
     const name = (_a = path.split("/").pop()) != null ? _a : path;
     if (tracked) {
-      new import_obsidian10.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);
+      new import_obsidian11.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);
       return;
     }
     const open = (await this.scan()).filter(
       (t) => samePath(t.filePath, path) && t.status === "open"
     );
     if (open.length === 0) {
-      new import_obsidian10.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
+      new import_obsidian11.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
       return;
     }
     const undated = open.filter((t) => !t.due).length;
@@ -4080,7 +4262,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
       caveats.push("none are sized, so they only show under the Any budget");
     else if (unsized > 0)
       caveats.push(`${unsized} unsized`);
-    new import_obsidian10.Notice(
+    new import_obsidian11.Notice(
       `Smart ToDo: tracking ${name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.` + (caveats.length > 0 ? ` ${caveats.join("; ")}.` : ""),
       8e3
     );
@@ -4152,7 +4334,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
       return;
     try {
       await ensureManagedFile(this.app, path);
-      new import_obsidian10.Notice(`Smart ToDo: created ${path}`, 4e3);
+      new import_obsidian11.Notice(`Smart ToDo: created ${path}`, 4e3);
     } catch (e) {
       console.error("[smart-todo] could not create managed file", path, e);
     }
@@ -4194,7 +4376,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
           break;
         applied++;
       }
-      new import_obsidian10.Notice(
+      new import_obsidian11.Notice(
         `Smart ToDo: retagged ${applied} of ${changes.length} task${changes.length === 1 ? "" : "s"}.`,
         5e3
       );
@@ -4235,7 +4417,7 @@ var SmartTodoPlugin = class extends import_obsidian10.Plugin {
         });
         if (!ok)
           return;
-        new import_obsidian10.Notice(
+        new import_obsidian11.Notice(
           moved === 0 ? "Smart ToDo: nothing left to archive." : `Smart ToDo: archived ${moved} task${moved === 1 ? "" : "s"} in ${(_a = file.path.split("/").pop()) != null ? _a : file.path}.`,
           5e3
         );

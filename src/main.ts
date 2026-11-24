@@ -5,7 +5,7 @@
 // file, and safe single-line write-back. No index persistence — the scan is
 // cheap because scope is narrow by construction.
 
-import { Menu, Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf, addIcon } from "obsidian";
 import { Extension } from "@codemirror/state";
 import { parseTasksFromContent, scanScope } from "./parser";
 import { metadataChipsExtension } from "./metadata-chips";
@@ -40,6 +40,7 @@ import {
 import { buildCaptureBody } from "./nlparse";
 import { SmartTodoView } from "./view";
 import { CategoryMigrationModal, planCategoryMigration } from "./categorize";
+import { SPIRAL_ICON_ID, SPIRAL_ICON_SVG, TaskSuggest } from "./task-suggest";
 
 /**
  * Coalesce bursty vault events (Sync landing a batch) into one rescan.
@@ -69,8 +70,14 @@ export default class SmartTodoPlugin extends Plugin {
     await this.loadSettings();
     this.applyAccent();
 
+    addIcon(SPIRAL_ICON_ID, SPIRAL_ICON_SVG);
+
     this.registerEditorExtension(this.editorExtensions);
     this.applyChipExtension();
+
+    // Always registered; the setting is read inside onTrigger so toggling it
+    // takes effect immediately. EditorSuggest has no unregister.
+    this.registerEditorSuggest(new TaskSuggest(this.app, this));
 
     this.registerView(
       VIEW_TYPE_SMART_TODO,

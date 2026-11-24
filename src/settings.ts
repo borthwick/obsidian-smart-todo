@@ -16,6 +16,7 @@ import {
   Accent,
   DEFAULT_IMPORTANT_HEADINGS,
   DEFAULT_MANAGED_FILE,
+  InlineSuggestMode,
   MODES,
   ViewMode,
 } from "./types";
@@ -319,6 +320,27 @@ export class SmartTodoSettingTab extends PluginSettingTab {
           this.plugin.settings.metadataChips = v;
           await this.plugin.saveSettings();
         })
+      );
+
+    new Setting(el)
+      .setName("Inline / menu")
+      .setDesc(
+        "Type a line, then \"/\" at the end of it, to turn it into a task — " +
+          "plain, important, or due in two days (which is what makes it urgent). " +
+          "It fires on a bare keystroke, so restrict or disable it here."
+      )
+      .addDropdown((d) =>
+        d
+          .addOptions({
+            everywhere: "Every note",
+            tracked: "Tracked notes only",
+            off: "Off",
+          })
+          .setValue(this.plugin.settings.inlineSuggest ?? "everywhere")
+          .onChange(async (v) => {
+            this.plugin.settings.inlineSuggest = v as InlineSuggestMode;
+            await this.plugin.saveSettings();
+          })
       );
 
     // The accent is a colour, so the control is the colour — a dropdown of

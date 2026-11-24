@@ -425,7 +425,20 @@ export interface SmartTodoSettings {
    * should always be refusable.
    */
   metadataChips: boolean;
+  /**
+   * Where the inline `/` menu answers: everywhere, only in tracked notes, or
+   * nowhere.
+   *
+   * It fires on a bare keystroke, so it is the most intrusive surface the
+   * plugin has — `everywhere` is the default because the note you are most
+   * likely to be typing in when a task occurs to you is the one nobody has
+   * added to scope, but it has to be refusable in one click.
+   */
+  inlineSuggest: InlineSuggestMode;
 }
+
+/** Where the `/` task menu is allowed to open. */
+export type InlineSuggestMode = "everywhere" | "tracked" | "off";
 
 export type Layout = "card" | "table";
 
@@ -449,6 +462,7 @@ export const DEFAULT_SETTINGS: SmartTodoSettings = {
   importantHeadings: [...DEFAULT_IMPORTANT_HEADINGS],
   groupByHeading: true,
   metadataChips: true,
+  inlineSuggest: "everywhere",
 };
 
 // --- Categories ----------------------------------------------------------
