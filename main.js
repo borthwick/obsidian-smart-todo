@@ -464,6 +464,15 @@ function startOfToday() {
 function addDays(date, days) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 }
+function addMonths(date, months) {
+  const target = new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  return new Date(
+    target.getFullYear(),
+    target.getMonth(),
+    Math.min(date.getDate(), lastDay)
+  );
+}
 function isSameDay(a, b) {
   return !!a && !!b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
@@ -2210,9 +2219,17 @@ var EditTaskModal = class extends import_obsidian5.Modal {
     deferInput.addEventListener("change", () => {
       this.draft.defer = deferInput.value ? parseDate(deferInput.value) : null;
     });
+    this.quickOffsets(deferWrap, (shift) => {
+      const base = this.draft.defer;
+      const today = startOfToday();
+      const from = base && base.getTime() > today.getTime() ? base : today;
+      const next = shift === null ? null : shift(from);
+      this.draft.defer = next;
+      deferInput.value = dateInputValue(next);
+    });
     this.hint(
       deferWrap,
-      "Hidden from Today and This Week until this date. Use it to park something without deleting it."
+      "Hidden from Today and This Week until this date. Past a week out it also leaves All, and shows under Deferred."
     );
     if (this.task.pushes > 0) {
       const pushWrap = this.field(
@@ -2259,8 +2276,8 @@ var EditTaskModal = class extends import_obsidian5.Modal {
     const today = startOfToday();
     const opts = [
       { label: "Today", date: today },
-      { label: "Tomorrow", date: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1) },
-      { label: "+1 week", date: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7) },
+      { label: "Tomorrow", date: addDays(today, 1) },
+      { label: "+1 week", date: addDays(today, 7) },
       { label: "Clear", date: null }
     ];
     for (const opt of opts) {
@@ -2269,6 +2286,29 @@ var EditTaskModal = class extends import_obsidian5.Modal {
         text: opt.label
       });
       btn.addEventListener("click", () => set(opt.date));
+    }
+  }
+  /**
+   * +1d / +2d / +1w / +1m / Clear — the defer shortcuts.
+   *
+   * Each hands back a function rather than a date so the caller decides what
+   * they count from; null is Clear.
+   */
+  quickOffsets(parent, set) {
+    const row = parent.createDiv({ cls: "smart-todo-quickdates" });
+    const opts = [
+      { label: "+1d", shift: (from) => addDays(from, 1) },
+      { label: "+2d", shift: (from) => addDays(from, 2) },
+      { label: "+1w", shift: (from) => addDays(from, 7) },
+      { label: "+1m", shift: (from) => addMonths(from, 1) },
+      { label: "Clear", shift: null }
+    ];
+    for (const opt of opts) {
+      const btn = row.createEl("button", {
+        cls: "smart-todo-quickdate",
+        text: opt.label
+      });
+      btn.addEventListener("click", () => set(opt.shift));
     }
   }
   field(parent, label) {

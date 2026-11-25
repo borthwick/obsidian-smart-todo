@@ -256,6 +256,23 @@ export function addDays(date: Date, days: number): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 }
 
+/**
+ * Add whole months, clamping the day rather than rolling into the next month.
+ *
+ * `new Date(2026, 0, 31 + month)` gives 3 March — JS normalises the overflow,
+ * so "+1 month" from the 31st silently skips February. A defer button has to
+ * mean what it says: a month from 31 January is 28 February.
+ */
+export function addMonths(date: Date, months: number): Date {
+  const target = new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  return new Date(
+    target.getFullYear(),
+    target.getMonth(),
+    Math.min(date.getDate(), lastDay)
+  );
+}
+
 export function isSameDay(a: Date, b: Date): boolean {
   return (
     !!a &&

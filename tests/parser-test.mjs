@@ -1497,6 +1497,41 @@ console.log("\n=== INLINE / MENU ===");
   check("and a clean title", roundTrip[0]?.title, "get the milk");
 }
 
+// ======================================================================
+// 0.15.2 — the defer shortcuts: +1d / +2d / +1w / +1m.
+// ======================================================================
+
+console.log("\n[addMonths — +1m clamps the day, it doesn't overflow]");
+const { addMonths } = mod;
+const dstr = (x) => formatDate(x);
+check("ordinary month", dstr(addMonths(new Date(2026, 10, 25), 1)), "2026-12-25");
+// new Date(2026, 0, 31 + month) gives 3 March — a "+1m" button that skips
+// February entirely is a button that lies.
+check("31 Jan + 1m is 28 Feb, not 3 Mar", dstr(addMonths(new Date(2026, 0, 31), 1)), "2026-02-28");
+check("leap year gets the 29th", dstr(addMonths(new Date(2028, 0, 31), 1)), "2028-02-29");
+check("31 May + 1m is 30 Jun", dstr(addMonths(new Date(2026, 4, 31), 1)), "2026-06-30");
+check("year rolls over", dstr(addMonths(new Date(2026, 11, 15), 1)), "2027-01-15");
+
+console.log("\n[defer offsets count from the date already set, when it's ahead]");
+// The modal's rule, asserted directly: anchor on the existing defer when it's
+// in the future (so a second +1w pushes a further week), otherwise on today.
+const anchorFor = (current, today) =>
+  current && current.getTime() > today.getTime() ? current : today;
+const REF = new Date(2026, 10, 25);
+check("empty box counts from today", dstr(addDays(anchorFor(null, REF), 7)), "2026-12-02");
+check(
+  "a future defer is pushed further, not reset",
+  dstr(addDays(anchorFor(new Date(2026, 11, 4), REF), 7)),
+  "2026-12-11"
+);
+check(
+  "a stale defer counts from today instead of staying in the past",
+  dstr(addDays(anchorFor(new Date(2026, 9, 1), REF), 1)),
+  "2026-11-26"
+);
+check("+2d", dstr(addDays(anchorFor(null, REF), 2)), "2026-11-27");
+check("+1m from the box", dstr(addMonths(anchorFor(new Date(2026, 11, 4), REF), 1)), "2027-01-04");
+
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`
 );
