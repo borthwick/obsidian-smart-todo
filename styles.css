@@ -744,6 +744,31 @@
   color: #fff;
 }
 
+/* The project a task belongs to, when the parent row isn't on screen.
+   Reads a shade stronger than the source chip because it's the answer to
+   "what is this for", which is a different question from "where is it". */
+.stw-parent-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  max-width: 14em;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.stw-parent-chip:hover {
+  color: var(--stw-accent);
+}
+.stw-parent-mark {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.stw-parent-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Source of a task pulled in from a tracked project note. Quieter than the
    category chip — it's provenance, not a decision you need to make. */
 .stw-source-chip {

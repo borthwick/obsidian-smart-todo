@@ -1342,6 +1342,17 @@ export class SmartTodoView extends ItemView {
 
     const meta = main.createDiv({ cls: "stw-task-meta" });
 
+    // The project this belongs to, when the project itself isn't on screen.
+    //
+    // A project in this vault is a parent checkbox — "Fund 4 build to 30M"
+    // with its calls and updates indented under it. Focus mode filters on the
+    // *children*, so the parent gets dropped and what's left is a bare "Do
+    // call with Jim to start to setup with Stepstone", which is the one thing
+    // the indentation on the page was there to prevent. Under renderTree the
+    // parent is visible directly above (depth > 0) and this would just repeat
+    // it, so it only renders when the chain is actually broken.
+    if (!opts.depth) this.renderParentChip(meta, task);
+
     // A container's own count, so a folded-looking parent still says how much
     // is under it.
     if (isContainer(task)) {
@@ -1586,6 +1597,52 @@ export class SmartTodoView extends ItemView {
       evt.preventDefault();
       evt.stopPropagation();
       void this.revealTask(task);
+    });
+  }
+
+  /**
+   * The nearest ancestor task, from the full scan rather than the visible set.
+   *
+   * Walks the whole chain and takes the *top* of it, not the immediate parent:
+   * two levels of indent under "Fund 4 build to 30M" is still Fund 4 work, and
+   * naming the middle step tells you less than naming the project does.
+   */
+  private rootProject(task: SmartTask): SmartTask | null {
+    let current = task;
+    let root: SmartTask | null = null;
+    for (let i = 0; i < 8; i++) {
+      if (current.parentLine === null || current.parentLine === undefined) break;
+      const parent = this.tasks.find(
+        (t) => t.filePath === current.filePath && t.lineNumber === current.parentLine
+      );
+      if (!parent) break;
+      root = parent;
+      current = parent;
+    }
+    return root;
+  }
+
+  private renderParentChip(parent: HTMLElement, task: SmartTask): void {
+    const project = this.rootProject(task);
+    if (!project) return;
+    const label = displayTitle(project.title).trim();
+    if (!label) return;
+
+    const chip = parent.createSpan({
+      cls: "stw-parent-chip",
+      attr: {
+        "aria-label": `Part of “${label}” — click to open it`,
+        title: `Part of “${label}”`,
+      },
+    });
+    chip.createSpan({ cls: "stw-parent-mark", text: "↳" });
+    // Truncation is CSS, not substring: a project title cut mid-word in the
+    // DOM is also cut in the tooltip and in search.
+    chip.createSpan({ cls: "stw-parent-label", text: label });
+    chip.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void this.revealTask(project);
     });
   }
 

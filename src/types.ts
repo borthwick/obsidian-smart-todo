@@ -331,6 +331,16 @@ export interface ScopeEntry {
   kind: "file" | "folder";
   /** Vault-relative, slash-normalized, no leading/trailing slash. */
   path: string;
+  /**
+   * Track only one section of the file: everything under this heading.
+   *
+   * Written as a `#Heading` suffix on the path. Some notes are several things
+   * at once — a Kanban board whose columns are headings is the clearest case,
+   * and meeting notes are the common one. Tracking the file whole puts a
+   * register of company names into the task panel as though they were work.
+   * Null means the whole file, which stays the default.
+   */
+  heading?: string | null;
 }
 
 export interface ManagedScope {

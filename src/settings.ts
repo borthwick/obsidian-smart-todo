@@ -70,13 +70,15 @@ export class SmartTodoSettingTab extends PluginSettingTab {
         });
       }
       for (const entry of scope.entries) {
-        summary.createDiv({
-          cls: "setting-item-description",
-          text:
-            entry.kind === "folder"
-              ? `📁 ${entry.path}/ — all .md files beneath it`
-              : `📄 ${entry.path}`,
-        });
+        let text: string;
+        if (entry.kind === "folder") {
+          text = `📁 ${entry.path}/ — all .md files beneath it`;
+        } else if (entry.heading) {
+          text = `📄 ${entry.path} — only under “${entry.heading}”`;
+        } else {
+          text = `📄 ${entry.path}`;
+        }
+        summary.createDiv({ cls: "setting-item-description", text });
       }
       summary.createDiv({
         cls: "setting-item-description",
@@ -93,6 +95,8 @@ export class SmartTodoSettingTab extends PluginSettingTab {
           "An entry ending in .md is a single file; anything " +
           "else is treated as a folder and all .md files under it are included. " +
           `Example: "${DEFAULT_MANAGED_FILE}" then "Projects/Tasks". ` +
+          "Add #Heading to a .md path to track only that section — " +
+          '"Meetings/board.md#Important" ignores the rest of the note. ' +
           // Nobody should have to hand-type a path with an emoji in it.
           "To add a project note, right-click it and choose " +
           '"Smart ToDo: track tasks in this note" instead of typing it here.'

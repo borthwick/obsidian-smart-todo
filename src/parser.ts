@@ -5,7 +5,7 @@
 // node without an Obsidian host. See tests/parser-test.mjs.
 
 import type { App } from "obsidian";
-import { isInScope } from "./scope";
+import { isInScope, isTaskInScope } from "./scope";
 import {
   DEFAULT_IMPORTANT_HEADINGS,
   Effort,
@@ -603,7 +603,14 @@ export async function scanScope(
     // Testing for `[ ]`/`[x]` specifically would skip a file whose tasks all
     // use a theme marker — which is the bug this release exists to fix.
     if (!/^\s*(?:[-*+]|\d+[.)])\s+\[.\]/m.test(content)) continue;
-    all.push(...parseTasksFromContent(content, file.path, options));
+    // Parse the whole file, then keep only what's in scope. Headings and
+    // parent/child ancestry are both established by reading top to bottom, so
+    // a heading-scoped file still has to be parsed whole and filtered after.
+    all.push(
+      ...parseTasksFromContent(content, file.path, options).filter((t) =>
+        isTaskInScope(t, scope)
+      )
+    );
   }
   return all;
 }

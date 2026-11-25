@@ -22,7 +22,7 @@ __export(main_exports, {
   default: () => SmartTodoPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 
 // src/types.ts
 var PRIORITY_MARK = {
@@ -257,19 +257,38 @@ function samePath(a, b) {
 function splitScopeEntries(raw) {
   return (raw != null ? raw : "").split(/\n/).map(normalizePath).filter((p) => p.length > 0);
 }
+function splitHeadingSuffix(entry) {
+  const m = /^(.*\.md)#(.+)$/i.exec(entry);
+  if (!m)
+    return { path: entry, heading: null };
+  const heading = m[2].trim();
+  return heading ? { path: m[1], heading } : { path: m[1], heading: null };
+}
+function normalizeHeading(h) {
+  return h.trim().toLowerCase().replace(/\s+/g, " ");
+}
+function headingMatches(taskHeading, needle) {
+  if (!taskHeading)
+    return false;
+  const h = normalizeHeading(taskHeading);
+  const n = normalizeHeading(needle);
+  return n.length > 0 && (h === n || h.startsWith(n));
+}
 function parseScope(raw, options = {}) {
   const { today = new Date(), weekStart = "sunday", expandTokens = true } = options;
   const parts = splitScopeEntries(raw).map((p) => expandTokens ? expandPathTokens(p, today, weekStart) : p).filter((p) => p.length > 0 && !p.includes("{{"));
   const seen = /* @__PURE__ */ new Set();
   const entries = [];
-  for (const path of parts) {
-    const key = path.toLowerCase();
+  for (const raw2 of parts) {
+    const key = raw2.toLowerCase();
     if (seen.has(key))
       continue;
     seen.add(key);
+    const { path, heading } = splitHeadingSuffix(raw2);
     entries.push({
       kind: /\.md$/i.test(path) ? "file" : "folder",
-      path
+      path,
+      heading: /\.md$/i.test(path) ? heading : null
     });
   }
   if (entries.length === 0) {
@@ -293,8 +312,22 @@ function isInScope(path, scope) {
   }
   return false;
 }
+function isTaskInScope(task, scope) {
+  const p = normalizePath(task.filePath).toLowerCase();
+  for (const entry of scope.entries) {
+    const e = entry.path.toLowerCase();
+    const fileMatches = entry.kind === "file" ? p === e : p.startsWith(`${e}/`);
+    if (!fileMatches)
+      continue;
+    if (!entry.heading)
+      return true;
+    if (headingMatches(task.heading, entry.heading))
+      return true;
+  }
+  return false;
+}
 function primaryManagedFile(scope) {
-  const file = scope.entries.find((e) => e.kind === "file");
+  const file = scope.entries.find((e) => e.kind === "file" && !e.heading);
   if (file)
     return file.path;
   const folder = scope.entries.find((e) => e.kind === "folder");
@@ -307,10 +340,11 @@ function rawEntries(raw) {
 }
 function scopeIncludesPath(raw, path, options = {}) {
   const { today = new Date(), weekStart = "sunday" } = options;
-  const needle = normalizePath(path).toLowerCase();
-  return rawEntries(raw).some(
-    (p) => p.toLowerCase() === needle || expandPathTokens(p, today, weekStart).toLowerCase() === needle
-  );
+  const needle = splitHeadingSuffix(normalizePath(path)).path.toLowerCase();
+  return rawEntries(raw).some((p) => {
+    const base = splitHeadingSuffix(p).path;
+    return base.toLowerCase() === needle || splitHeadingSuffix(expandPathTokens(p, today, weekStart)).path.toLowerCase() === needle;
+  });
 }
 function addPathToScope(raw, path) {
   const clean = normalizePath(path);
@@ -324,9 +358,9 @@ ${clean}`;
 }
 function removePathFromScope(raw, path, options = {}) {
   const { today = new Date(), weekStart = "sunday" } = options;
-  const needle = normalizePath(path).toLowerCase();
+  const needle = splitHeadingSuffix(normalizePath(path)).path.toLowerCase();
   const kept = rawEntries(raw).filter(
-    (p) => p.toLowerCase() !== needle && expandPathTokens(p, today, weekStart).toLowerCase() !== needle
+    (p) => splitHeadingSuffix(p).path.toLowerCase() !== needle && splitHeadingSuffix(expandPathTokens(p, today, weekStart)).path.toLowerCase() !== needle
   );
   return kept.join("\n");
 }
@@ -369,7 +403,11 @@ function splitLegacyCommaList(raw, exists) {
   return migrated === value ? null : migrated;
 }
 function describeScope(scope) {
-  return scope.entries.map((e) => e.kind === "folder" ? `${e.path}/ (folder)` : e.path).join(", ");
+  return scope.entries.map((e) => {
+    if (e.kind === "folder")
+      return `${e.path}/ (folder)`;
+    return e.heading ? `${e.path} \u203A ${e.heading}` : e.path;
+  }).join(", ");
 }
 
 // src/parser.ts
@@ -658,7 +696,11 @@ async function scanScope(app, scope, options = {}) {
     }
     if (!/^\s*(?:[-*+]|\d+[.)])\s+\[.\]/m.test(content))
       continue;
-    all.push(...parseTasksFromContent(content, file.path, options));
+    all.push(
+      ...parseTasksFromContent(content, file.path, options).filter(
+        (t) => isTaskInScope(t, scope)
+      )
+    );
   }
   return all;
 }
@@ -891,331 +933,19 @@ var ArchiveBacklogModal = class extends import_obsidian.Modal {
   }
 };
 
-// src/settings.ts
-var import_obsidian2 = require("obsidian");
-var WEEK_PATTERN = "2. Day Planners/Weeks/Week {{week}} of {{year}}.md";
-var SmartTodoSettingTab = class extends import_obsidian2.PluginSettingTab {
-  constructor(app, plugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-  display() {
-    var _a2;
-    const el = this.containerEl;
-    el.empty();
-    el.createEl("h2", { text: "Smart ToDo" });
-    el.createEl("h3", { text: "Managed scope" });
-    el.createEl("p", {
-      cls: "setting-item-description",
-      text: "Smart ToDo only reads the files listed here. Nothing else in the vault is scanned \u2014 old meeting notes and planners full of stale checkboxes stay invisible."
-    });
-    const summary = el.createDiv({ cls: "smart-todo-scope-summary" });
-    const renderSummary = () => {
-      summary.empty();
-      const scope = this.plugin.scope;
-      const matches = this.app.vault.getMarkdownFiles().filter((f) => this.plugin.isInManagedScope(f.path));
-      if (scope.usedFallback) {
-        summary.createDiv({
-          cls: "setting-item-description",
-          text: `No scope set \u2014 falling back to ${DEFAULT_MANAGED_FILE}.`
-        });
-      }
-      for (const entry of scope.entries) {
-        summary.createDiv({
-          cls: "setting-item-description",
-          text: entry.kind === "folder" ? `\u{1F4C1} ${entry.path}/ \u2014 all .md files beneath it` : `\u{1F4C4} ${entry.path}`
-        });
-      }
-      summary.createDiv({
-        cls: "setting-item-description",
-        text: `Currently matching ${matches.length} file${matches.length === 1 ? "" : "s"} in the vault. New tasks go to ${primaryManagedFile(scope)}.`
-      });
-    };
-    new import_obsidian2.Setting(el).setName("Managed files").setDesc(
-      `One path per line \u2014 commas are part of a filename, not separators. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}" then "Projects/Tasks". To add a project note, right-click it and choose "Smart ToDo: track tasks in this note" instead of typing it here.`
-    ).addTextArea((text) => {
-      text.setPlaceholder(DEFAULT_MANAGED_FILE).setValue(this.plugin.settings.managedFiles).onChange(async (value) => {
-        this.plugin.settings.managedFiles = value;
-        await this.plugin.saveSettings();
-        renderSummary();
-        this.plugin.refreshViews();
-      });
-      text.inputEl.rows = 3;
-      text.inputEl.addClass("smart-todo-scope-input");
-    });
-    el.appendChild(summary);
-    renderSummary();
-    new import_obsidian2.Setting(el).setName("Create the managed file").setDesc(
-      "Creates the file new tasks are appended to, if it doesn't exist yet."
-    ).addButton(
-      (btn) => btn.setButtonText("Create now").onClick(async () => {
-        await this.plugin.ensurePrimaryFile();
-        renderSummary();
-      })
-    );
-    new import_obsidian2.Setting(el).setName("Inbox file").setDesc(
-      `Optional. Open tasks in this file are treated as untriaged captures: they show in an Inbox bucket at the top of the panel and nowhere else. Keep moves one into ${primaryManagedFile(this.plugin.scope)}. Leave blank to turn the Inbox off.`
-    ).addText((text) => {
-      text.setPlaceholder("Task inbox.md").setValue(this.plugin.settings.inboxFile).onChange(async (value) => {
-        this.plugin.settings.inboxFile = value;
-        await this.plugin.saveSettings();
-        renderInboxWarning();
-        this.plugin.refreshViews();
-      });
-      text.inputEl.addClass("smart-todo-scope-input");
-    });
-    const inboxWarning = el.createDiv();
-    const renderInboxWarning = () => {
-      inboxWarning.empty();
-      if (!this.plugin.inboxOutOfScope)
-        return;
-      const path = this.plugin.inboxPath;
-      inboxWarning.createDiv({
-        cls: "setting-item-description",
-        text: `\u26A0 ${path} isn't in the managed scope above, so it's never scanned \u2014 the Inbox will stay empty.`
-      });
-      new import_obsidian2.Setting(inboxWarning).setName("Add the inbox to managed files").addButton(
-        (btn) => btn.setButtonText("Add to scope").onClick(async () => {
-          this.plugin.settings.managedFiles = addPathToScope(
-            this.plugin.settings.managedFiles,
-            path
-          );
-          await this.plugin.saveSettings();
-          this.plugin.refreshViews();
-          this.display();
-        })
-      );
-    };
-    renderInboxWarning();
-    el.createEl("h3", { text: "The weekly page" });
-    el.createEl("p", {
-      cls: "setting-item-description",
-      text: "A tracked path can carry {{week}}, {{week:02}} and {{year}}, which resolve each time the panel scans. Track the pattern once and the right week's page is always the one being read."
-    });
-    new import_obsidian2.Setting(el).setName("Resolve {{week}} and {{year}} in tracked paths").setDesc(
-      "Off means a path with braces in it is skipped rather than treated as a literal filename."
-    ).addToggle(
-      (t) => t.setValue(this.plugin.settings.weekTokensEnabled !== false).onChange(async (v) => {
-        this.plugin.settings.weekTokensEnabled = v;
-        await this.plugin.saveSettings();
-        renderSummary();
-        this.plugin.refreshViews();
-      })
-    );
-    new import_obsidian2.Setting(el).setName("Weeks start on").setDesc(
-      `Which convention your week-page numbering follows. Sunday is the US convention (week 1 contains Jan 1); Monday is ISO-8601. These disagree by one for much of the year, and the wrong one points at an adjacent week's file \u2014 which looks like the feature not working. Right now: week ${weekNumber(new Date(), (_a2 = this.plugin.settings.weekStart) != null ? _a2 : "sunday")}.`
-    ).addDropdown((dd) => {
-      var _a3;
-      dd.addOption("sunday", "Sunday (US)");
-      dd.addOption("monday", "Monday (ISO-8601)");
-      dd.setValue((_a3 = this.plugin.settings.weekStart) != null ? _a3 : "sunday").onChange(async (v) => {
-        this.plugin.settings.weekStart = v;
-        await this.plugin.saveSettings();
-        renderSummary();
-        this.plugin.refreshViews();
-        this.display();
-      });
-    });
-    new import_obsidian2.Setting(el).setName("Track this week's page").setDesc(
-      `Adds "${WEEK_PATTERN}" to the managed files above. Edit the pattern there if your weekly notes live somewhere else.`
-    ).addButton(
-      (btn) => btn.setButtonText(
-        scopeIncludesPath(this.plugin.settings.managedFiles, WEEK_PATTERN) ? "Already tracked" : "Track it"
-      ).onClick(async () => {
-        var _a3;
-        this.plugin.settings.managedFiles = addPathToScope(
-          this.plugin.settings.managedFiles,
-          WEEK_PATTERN
-        );
-        await this.plugin.saveSettings();
-        this.plugin.refreshViews();
-        const resolved = expandPathTokens(
-          WEEK_PATTERN,
-          new Date(),
-          (_a3 = this.plugin.settings.weekStart) != null ? _a3 : "sunday"
-        );
-        const exists = !!this.app.vault.getAbstractFileByPath(resolved);
-        new import_obsidian2.Notice(
-          exists ? `Smart ToDo: tracking ${resolved}.` : `Smart ToDo: pattern added, but ${resolved} doesn't exist yet \u2014 check the folder and the week-start setting.`,
-          8e3
-        );
-        this.display();
-      })
-    );
-    new import_obsidian2.Setting(el).setName("Headings that mean important").setDesc(
-      'Comma-separated. A task under a heading containing any of these counts as important unless the task says otherwise itself \u2014 the judgment on "Focus this week, what is Important and Urgent" was made once for the whole list rather than once per line. The panel marks inferred importance with \xA7 so you can see where it came from.'
-    ).addTextArea((text) => {
-      var _a3;
-      text.setPlaceholder(DEFAULT_IMPORTANT_HEADINGS.join(", ")).setValue(((_a3 = this.plugin.settings.importantHeadings) != null ? _a3 : []).join(", ")).onChange(async (value) => {
-        this.plugin.settings.importantHeadings = value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-        await this.plugin.saveSettings();
-        this.plugin.refreshViews();
-      });
-      text.inputEl.rows = 2;
-      text.inputEl.addClass("smart-todo-scope-input");
-    });
-    new import_obsidian2.Setting(el).setName("Split tracked notes by heading").setDesc(
-      "Inside a tracked note, group its tasks under the heading each sits below. On a weekly page those sections are most of the meaning."
-    ).addToggle(
-      (t) => t.setValue(this.plugin.settings.groupByHeading !== false).onChange(async (v) => {
-        this.plugin.settings.groupByHeading = v;
-        await this.plugin.saveSettings();
-        this.plugin.refreshViews();
-      })
-    );
-    el.createEl("h3", { text: "Display" });
-    new import_obsidian2.Setting(el).setName("Metadata as chips in the editor").setDesc(
-      "Show [due:: \u2026], [effort:: \u2026] and the legacy emoji as small chips while editing a note. Put the cursor on a line to see the raw text \u2014 nothing is hidden from editing, and the file on disk is unchanged."
-    ).addToggle(
-      (t) => t.setValue(this.plugin.settings.metadataChips !== false).onChange(async (v) => {
-        this.plugin.settings.metadataChips = v;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian2.Setting(el).setName("Inline / menu").setDesc(
-      'Type a line, then "/" at the end of it, to turn it into a task \u2014 plain, important, or due in two days (which is what makes it urgent). It fires on a bare keystroke, so restrict or disable it here.'
-    ).addDropdown(
-      (d) => {
-        var _a3;
-        return d.addOptions({
-          everywhere: "Every note",
-          tracked: "Tracked notes only",
-          off: "Off"
-        }).setValue((_a3 = this.plugin.settings.inlineSuggest) != null ? _a3 : "everywhere").onChange(async (v) => {
-          this.plugin.settings.inlineSuggest = v;
-          await this.plugin.saveSettings();
-        });
-      }
-    );
-    const accentSetting = new import_obsidian2.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
-    const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
-    const paintAccents = () => {
-      accentRow.empty();
-      for (const id of Object.keys(ACCENTS)) {
-        const def = ACCENTS[id];
-        const btn = accentRow.createEl("button", { cls: "smart-todo-accent" });
-        btn.style.setProperty("--swatch", def.base);
-        btn.createSpan({ cls: "smart-todo-accent-swatch" });
-        btn.createSpan({ text: def.label });
-        if (this.plugin.settings.accent === id)
-          btn.addClass("is-active");
-        btn.addEventListener("click", async () => {
-          this.plugin.settings.accent = id;
-          await this.plugin.saveSettings();
-          paintAccents();
-          this.plugin.rebuildViews();
-        });
-      }
-    };
-    paintAccents();
-    new import_obsidian2.Setting(el).setName("Opens in").setDesc(
-      "Which mode the panel starts in. Focus groups by Eisenhower quadrant, Sweep runs the timer, Lanes shows the effort board."
-    ).addDropdown((dd) => {
-      for (const m of MODES)
-        dd.addOption(m.id, m.label);
-      dd.setValue(this.plugin.settings.defaultMode).onChange(async (value) => {
-        this.plugin.settings.defaultMode = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian2.Setting(el).setName("Pushes warning threshold").setDesc(
-      "The pushes badge turns amber at or above this count \u2014 your procrastination signal. Set higher to only flag chronic avoiders."
-    ).addText(
-      (text) => text.setValue(String(this.plugin.settings.pushesWarnThreshold)).onChange(async (value) => {
-        const n = Number(value);
-        if (Number.isFinite(n) && n >= 1) {
-          this.plugin.settings.pushesWarnThreshold = Math.floor(n);
-          await this.plugin.saveSettings();
-          this.plugin.refreshViews();
-        }
-      })
-    );
-    el.createEl("h3", { text: "Sweep" });
-    el.createEl("p", {
-      cls: "setting-item-description",
-      text: "A sweep is a timed run through the three-minute tasks: one at a time, with Done / Skip / Takes longer on the keyboard."
-    });
-    new import_obsidian2.Setting(el).setName("Offer a sweep in the list").setDesc(
-      `Shows a "you have N quick wins" banner inside the task list when there are at least two. Turn this off if you'd rather only reach Sweep from the mode row.`
-    ).addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.showSweepBanner).onChange(async (value) => {
-        this.plugin.settings.showSweepBanner = value;
-        await this.plugin.saveSettings();
-        this.plugin.refreshViews();
-      })
-    );
-    new import_obsidian2.Setting(el).setName("Seconds per task").setDesc(
-      "The countdown for each task in a sweep. Three minutes is the point of the light-effort tag, so that's the default; going over doesn't stop you, it just turns the clock red."
-    ).addText(
-      (text) => text.setValue(String(this.plugin.settings.sweepSeconds)).onChange(async (value) => {
-        const n = Number(value);
-        if (Number.isFinite(n) && n >= 15) {
-          this.plugin.settings.sweepSeconds = Math.floor(n);
-          await this.plugin.saveSettings();
-        }
-      })
-    );
-    el.createEl("h3", { text: "Categories" });
-    el.createEl("p", {
-      cls: "setting-item-description",
-      text: "Tasks carry one of three categories \u2014 Betaworks, Personal, Health \u2014 stored in the same [project:: \u2026] field, so Dataview and Tasks queries keep working. Imported tasks with older project names can be folded onto the three in one pass; you'll see every change first."
-    });
-    new import_obsidian2.Setting(el).setName("Fold projects into categories").setDesc(
-      "Previews the retag, then applies it one line at a time. Tasks with no project are left alone."
-    ).addButton(
-      (btn) => btn.setButtonText("Review changes").onClick(() => void this.plugin.openCategoryMigration())
-    );
-  }
-};
+// src/heading-scope-modal.ts
+var import_obsidian4 = require("obsidian");
 
-// src/add-task-modal.ts
+// src/task-suggest.ts
 var import_obsidian3 = require("obsidian");
-var AddTaskModal = class extends import_obsidian3.Modal {
-  constructor(app, onSubmit) {
-    super(app);
-    this.onSubmit = onSubmit;
-    this.title = "";
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.createEl("h3", { text: "Add task" });
-    const commit = () => {
-      const value = this.title.trim();
-      if (!value)
-        return;
-      this.close();
-      this.onSubmit(value);
-    };
-    new import_obsidian3.Setting(contentEl).setName("Task").addText((text) => {
-      text.setPlaceholder("What needs doing?").onChange((value) => {
-        this.title = value;
-      });
-      text.inputEl.addClass("smart-todo-modal-input");
-      text.inputEl.addEventListener("keydown", (evt) => {
-        if (evt.key === "Enter") {
-          evt.preventDefault();
-          commit();
-        }
-      });
-      window.setTimeout(() => text.inputEl.focus(), 0);
-    });
-    new import_obsidian3.Setting(contentEl).addButton(
-      (btn) => btn.setButtonText("Add").setCta().onClick(commit)
-    );
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
 
 // src/writer.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian2 = require("obsidian");
 var StaleTaskError = class extends Error {
 };
 function getFile(app, path) {
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof import_obsidian4.TFile)) {
+  if (!(file instanceof import_obsidian2.TFile)) {
     throw new StaleTaskError(`File no longer exists: ${path}`);
   }
   return file;
@@ -1464,7 +1194,7 @@ ${line}`);
 }
 async function ensureManagedFile(app, path) {
   const existing = app.vault.getAbstractFileByPath(path);
-  if (existing instanceof import_obsidian4.TFile)
+  if (existing instanceof import_obsidian2.TFile)
     return existing;
   const slash = path.lastIndexOf("/");
   if (slash > 0) {
@@ -1618,11 +1348,771 @@ async function safeWrite(fn) {
     return true;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    new import_obsidian4.Notice(`Smart ToDo: ${msg}`, 6e3);
+    new import_obsidian2.Notice(`Smart ToDo: ${msg}`, 6e3);
     console.error("[smart-todo] write failed", e);
     return false;
   }
 }
+
+// src/filters.ts
+var URGENT_WINDOW_DAYS = 2;
+var DEFER_HORIZON_DAYS = 7;
+function isResting(task, today = startOfToday()) {
+  return !!task.defer && task.defer.getTime() > today.getTime();
+}
+function isParked(task, today = startOfToday()) {
+  if (!task.defer)
+    return false;
+  return task.defer.getTime() > addDays(today, DEFER_HORIZON_DAYS).getTime();
+}
+function isOverdue(task, today = startOfToday()) {
+  return task.status === "open" && !!task.due && task.due.getTime() < today.getTime();
+}
+function isDueToday(task, today = startOfToday()) {
+  return task.status === "open" && !!task.due && isSameDay(task.due, today);
+}
+function isUrgent(task, today = startOfToday()) {
+  if (!task.due)
+    return false;
+  if (isResting(task, today))
+    return false;
+  const horizon = addDays(today, URGENT_WINDOW_DAYS);
+  return task.due.getTime() <= horizon.getTime();
+}
+function isImportant(task) {
+  return task.important === true;
+}
+function quadrantOf(task, today = startOfToday()) {
+  return quadrantFor(isUrgent(task, today), isImportant(task));
+}
+function fitsBudget(task, budget) {
+  if (budget === "any")
+    return true;
+  if (!task.effort)
+    return false;
+  const def = BUDGETS.find((b) => b.id === budget);
+  return !!def && def.fits.includes(task.effort);
+}
+function matchesCategory(task, filter) {
+  if (filter === "all")
+    return true;
+  return categoryFor(task.project) === filter;
+}
+function estimateMinutes(tasks) {
+  return tasks.reduce((sum, t) => sum + (t.effort ? EFFORT_MINUTES[t.effort] : 0), 0);
+}
+function formatDuration(minutes) {
+  if (minutes <= 0)
+    return "\u2014";
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0)
+    return `${m}m`;
+  if (m === 0)
+    return `${h}h`;
+  return `${h}h ${m}m`;
+}
+function matchesHorizon(task, horizon, today = startOfToday()) {
+  if (horizon === "done")
+    return task.status === "done";
+  if (task.status !== "open")
+    return false;
+  switch (horizon) {
+    case "today":
+      return !isResting(task, today) && !!task.due && task.due.getTime() <= today.getTime();
+    case "week": {
+      const end = addDays(today, 6);
+      if (task.defer && task.defer.getTime() > end.getTime())
+        return false;
+      return !!task.due && task.due.getTime() <= end.getTime();
+    }
+    case "deferred":
+      return isResting(task, today);
+    default:
+      return !isParked(task, today);
+  }
+}
+function matchesSearch(tasks, search) {
+  const needle = search.trim().toLowerCase();
+  if (!needle)
+    return [];
+  return tasks.filter((t) => t.title.toLowerCase().includes(needle));
+}
+function selectTasks(tasks, query, today = startOfToday()) {
+  const needle = query.search.trim().toLowerCase();
+  const everywhere = !!needle && !!query.searchEverywhere;
+  const out = tasks.filter((t) => {
+    if (needle && !t.title.toLowerCase().includes(needle))
+      return false;
+    if (everywhere)
+      return true;
+    if (!matchesHorizon(t, query.horizon, today))
+      return false;
+    if (!matchesCategory(t, query.category))
+      return false;
+    if (!fitsBudget(t, query.budget))
+      return false;
+    return true;
+  });
+  if (everywhere) {
+    return out.sort((a, b) => {
+      if (a.status !== b.status)
+        return a.status === "open" ? -1 : 1;
+      return a.status === "open" ? compareForToday(a, b, today) : compareCompleted(a, b);
+    });
+  }
+  if (query.horizon === "done")
+    return out.sort(compareCompleted);
+  if (query.horizon === "deferred") {
+    return out.sort(
+      (a, b) => {
+        var _a2, _b, _c, _d;
+        return ((_b = (_a2 = a.defer) == null ? void 0 : _a2.getTime()) != null ? _b : 0) - ((_d = (_c = b.defer) == null ? void 0 : _c.getTime()) != null ? _d : 0);
+      }
+    );
+  }
+  return out.sort((a, b) => compareForToday(a, b, today));
+}
+function groupByHeading(tasks) {
+  var _a2, _b;
+  const sections = [];
+  const index = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    const key = (_a2 = task.heading) != null ? _a2 : "\0none";
+    let section = index.get(key);
+    if (!section) {
+      section = { heading: (_b = task.heading) != null ? _b : null, tasks: [] };
+      index.set(key, section);
+      sections.push(section);
+    }
+    section.tasks.push(task);
+  }
+  return sections;
+}
+function isContainer(task) {
+  var _a2;
+  return ((_a2 = task.openChildren) != null ? _a2 : 0) > 0;
+}
+function groupBySource(tasks, isHome) {
+  const main = [];
+  const byPath = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    if (isHome(task.filePath)) {
+      main.push(task);
+      continue;
+    }
+    const bucket = byPath.get(task.filePath);
+    if (bucket)
+      bucket.push(task);
+    else
+      byPath.set(task.filePath, [task]);
+  }
+  return {
+    main,
+    groups: [...byPath.entries()].map(([path, groupTasks]) => ({ path, tasks: groupTasks }))
+  };
+}
+function groupByQuadrant(tasks, today = startOfToday()) {
+  const out = { do: [], schedule: [], delegate: [], drop: [] };
+  for (const t of tasks)
+    out[quadrantOf(t, today)].push(t);
+  return out;
+}
+function compareForToday(a, b, today = startOfToday()) {
+  const rank = (t) => {
+    if (isOverdue(t, today))
+      return 0;
+    if (isDueToday(t, today))
+      return 1;
+    if (t.due)
+      return 2;
+    return 3;
+  };
+  const byRank = rank(a) - rank(b);
+  if (byRank !== 0)
+    return byRank;
+  if (a.due && b.due && a.due.getTime() !== b.due.getTime()) {
+    return a.due.getTime() - b.due.getTime();
+  }
+  const effortOf = (t) => t.effort ? EFFORT_WEIGHT[t.effort] : 0;
+  const byEffort = effortOf(b) - effortOf(a);
+  if (byEffort !== 0)
+    return byEffort;
+  const byPushes = b.pushes - a.pushes;
+  if (byPushes !== 0)
+    return byPushes;
+  return a.title.localeCompare(b.title);
+}
+function compareCompleted(a, b) {
+  const at = a.doneDate ? a.doneDate.getTime() : 0;
+  const bt = b.doneDate ? b.doneDate.getTime() : 0;
+  if (at !== bt)
+    return bt - at;
+  return a.title.localeCompare(b.title);
+}
+
+// src/task-suggest.ts
+var TASK_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[.\]\s*)/;
+var BULLET_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)/;
+var INDENT_RE = /^(\s*)/;
+var NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
+var _a;
+var urgentWindow = (_a = NUMBER_WORDS[URGENT_WINDOW_DAYS]) != null ? _a : String(URGENT_WINDOW_DAYS);
+var ACTIONS = [
+  {
+    id: "plain",
+    label: "task, triage later",
+    keywords: ["add", "task", "todo", "plain", "triage"]
+  },
+  {
+    id: "important",
+    label: "important",
+    keywords: ["important", "priority", "high", "matters"]
+  },
+  {
+    id: "urgent",
+    label: `urgent (due in ${urgentWindow} days)`,
+    keywords: ["urgent", "due", "soon", "now", "today"]
+  }
+];
+var SPIRAL_ICON_ID = "smart-todo-spiral";
+var SPIRAL_ICON_SVG = `<g transform="scale(4.1667)" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12 m 0 0 c 0.5 0 1 0 1 -1 c 0 -1.5 -1.5 -1.5 -2 -1 c -1.5 1 -1.5 3.5 0.5 4 c 3 0.5 4 -3 2 -5 c -3 -3 -7 0 -6 4 c 1 5 8 6 10 1 c 2 -5 -3 -11 -9 -9 c -6 2 -6 10 0 12" /></g>`;
+function triggerQuery(lineUpToCursor) {
+  var _a2, _b, _c, _d;
+  const m = /\/([A-Za-z]*)$/.exec(lineUpToCursor);
+  if (!m)
+    return null;
+  const slashAt = lineUpToCursor.length - m[0].length;
+  const before = lineUpToCursor.slice(0, slashAt);
+  if (!before.trim())
+    return null;
+  const prev = (_a2 = before.at(-1)) != null ? _a2 : "";
+  if (prev === "/" || prev === ":" || prev === ".")
+    return null;
+  const word = (_c = (_b = /\S*$/.exec(lineUpToCursor)) == null ? void 0 : _b[0]) != null ? _c : "";
+  if (((_d = word.match(/\//g)) != null ? _d : []).length > 1)
+    return null;
+  if (/\d\s*$/.test(before))
+    return null;
+  if (/https?:$|\]\($/.test(before.trimEnd()))
+    return null;
+  return m[1];
+}
+function inVerbatimRegion(editor, line) {
+  let fenced = false;
+  for (let i = 0; i < line; i++) {
+    const text = editor.getLine(i);
+    if (/^\s*(```|~~~)/.test(text))
+      fenced = !fenced;
+    if (i === 0 && text.trim() === "---")
+      fenced = true;
+    else if (fenced && i > 0 && text.trim() === "---" && editor.getLine(0).trim() === "---") {
+      fenced = false;
+    }
+  }
+  return fenced;
+}
+function applyAction(line, action, today = startOfToday()) {
+  var _a2, _b;
+  let body = line.replace(/\s+$/, "");
+  if (!TASK_PREFIX_RE.test(body)) {
+    const bullet = BULLET_PREFIX_RE.exec(body);
+    if (bullet) {
+      body = `${bullet[1]}[ ] ${body.slice(bullet[1].length)}`;
+    } else {
+      const indent = (_b = (_a2 = INDENT_RE.exec(body)) == null ? void 0 : _a2[1]) != null ? _b : "";
+      body = `${indent}- [ ] ${body.slice(indent.length)}`;
+    }
+  }
+  if (action === "important")
+    return setInlineField(body, "important", "true");
+  if (action === "urgent") {
+    return setInlineField(body, "due", formatDate(addDays(today, URGENT_WINDOW_DAYS)));
+  }
+  return body;
+}
+var TaskSuggest = class extends import_obsidian3.EditorSuggest {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+  onTrigger(cursor, editor, file) {
+    const mode = this.plugin.settings.inlineSuggest;
+    if (mode === "off")
+      return null;
+    if (mode === "tracked" && !(file && this.plugin.isInManagedScope(file.path)))
+      return null;
+    const upToCursor = editor.getLine(cursor.line).slice(0, cursor.ch);
+    const query = triggerQuery(upToCursor);
+    if (query === null)
+      return null;
+    if (inVerbatimRegion(editor, cursor.line))
+      return null;
+    return {
+      start: { line: cursor.line, ch: cursor.ch - query.length - 1 },
+      end: cursor,
+      query
+    };
+  }
+  getSuggestions(context) {
+    const q = context.query.toLowerCase();
+    return ACTIONS.filter(
+      (a) => !q || a.keywords.some((k) => k.startsWith(q)) || a.id.startsWith(q)
+    );
+  }
+  renderSuggestion(item, el) {
+    el.addClass("smart-todo-suggest");
+    const icon = el.createSpan({ cls: `smart-todo-suggest-icon is-${item.id}` });
+    (0, import_obsidian3.setIcon)(icon, SPIRAL_ICON_ID);
+    el.createDiv({ cls: "smart-todo-suggest-title", text: item.label });
+  }
+  selectSuggestion(item) {
+    const ctx = this.context;
+    if (!ctx)
+      return;
+    const { editor, start, end, file } = ctx;
+    const line = editor.getLine(start.line);
+    const stripped = line.slice(0, start.ch) + line.slice(end.ch);
+    const next = applyAction(stripped, item.id);
+    editor.replaceRange(
+      next,
+      { line: start.line, ch: 0 },
+      { line: start.line, ch: line.length }
+    );
+    editor.setCursor({ line: start.line, ch: next.length });
+    this.close();
+    void this.trackOnCapture(file);
+  }
+  /**
+   * Capturing into a note tracks that note.
+   *
+   * 0.12 only *warned* that an untracked note wouldn't show, with a link to fix
+   * it. That was wrong in practice: the task is written, the toast goes away,
+   * and what's left is a real markdown checkbox the panel silently refuses to
+   * list — which reads as the plugin being broken, and sends you to the search
+   * box to type the task a second time.
+   *
+   * Deliberately choosing "task" in this plugin's own menu *is* the request to
+   * manage it, so scope follows the capture. Announced and undoable, because it
+   * changes a setting the user didn't open.
+   */
+  async trackOnCapture(file) {
+    if (!file || this.plugin.isInManagedScope(file.path))
+      return;
+    await this.plugin.toggleTracked(file.path, { silent: true });
+    const frag = document.createDocumentFragment();
+    frag.createDiv({ text: `Now tracking ${file.basename}.` });
+    const link = frag.createEl("a", { text: "Undo", href: "#" });
+    link.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      void this.plugin.toggleTracked(file.path);
+    });
+    new import_obsidian3.Notice(frag, 6e3);
+  }
+};
+
+// src/heading-scope-modal.ts
+function headingsWithCounts(content) {
+  const out = [];
+  let current = null;
+  let preamble = 0;
+  let inFence = false;
+  let archived = false;
+  for (const line of content.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence)
+      continue;
+    const h = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (h) {
+      const text = h[2].replace(/<[^>]+>/g, "").replace(/[*_`]/g, "").trim();
+      if (ARCHIVE_HEADING_RE.test(text)) {
+        current = null;
+        archived = true;
+        continue;
+      }
+      archived = false;
+      current = { heading: text || null, open: 0 };
+      if (current.heading)
+        out.push(current);
+      continue;
+    }
+    if (archived)
+      continue;
+    if (!/^\s*(?:[-*+]|\d+[.)])\s+\[ \]/.test(line))
+      continue;
+    if (current == null ? void 0 : current.heading)
+      current.open += 1;
+    else
+      preamble += 1;
+  }
+  const whole = {
+    heading: null,
+    open: preamble + out.reduce((n, c) => n + c.open, 0)
+  };
+  return [whole, ...out];
+}
+var HeadingScopeModal = class extends import_obsidian4.FuzzySuggestModal {
+  constructor(app, fileName, choices, onPick) {
+    super(app);
+    this.fileName = fileName;
+    this.choices = choices;
+    this.onPick = onPick;
+    this.setPlaceholder(`Track which part of ${fileName}?`);
+    this.setInstructions([
+      { command: "\u2191\u2193", purpose: "navigate" },
+      { command: "\u21B5", purpose: "track this section" },
+      { command: "esc", purpose: "cancel" }
+    ]);
+    this.modalEl.addClass("smart-todo-heading-scope");
+  }
+  getItems() {
+    return this.choices;
+  }
+  getItemText(item) {
+    var _a2;
+    const label = (_a2 = item.heading) != null ? _a2 : "The whole note";
+    return `${label} \u2014 ${item.open} open`;
+  }
+  onChooseItem(item) {
+    void this.onPick(item.heading);
+  }
+  static open(app, fileName, content, onPick) {
+    const choices = headingsWithCounts(content);
+    if (choices.length <= 1) {
+      new import_obsidian4.Notice(`Smart ToDo: ${fileName} has no headings to scope to.`, 4e3);
+      void onPick(null);
+      return;
+    }
+    const modal = new HeadingScopeModal(app, fileName, choices, onPick);
+    modal.open();
+  }
+};
+
+// src/settings.ts
+var import_obsidian5 = require("obsidian");
+var WEEK_PATTERN = "2. Day Planners/Weeks/Week {{week}} of {{year}}.md";
+var SmartTodoSettingTab = class extends import_obsidian5.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    var _a2;
+    const el = this.containerEl;
+    el.empty();
+    el.createEl("h2", { text: "Smart ToDo" });
+    el.createEl("h3", { text: "Managed scope" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text: "Smart ToDo only reads the files listed here. Nothing else in the vault is scanned \u2014 old meeting notes and planners full of stale checkboxes stay invisible."
+    });
+    const summary = el.createDiv({ cls: "smart-todo-scope-summary" });
+    const renderSummary = () => {
+      summary.empty();
+      const scope = this.plugin.scope;
+      const matches = this.app.vault.getMarkdownFiles().filter((f) => this.plugin.isInManagedScope(f.path));
+      if (scope.usedFallback) {
+        summary.createDiv({
+          cls: "setting-item-description",
+          text: `No scope set \u2014 falling back to ${DEFAULT_MANAGED_FILE}.`
+        });
+      }
+      for (const entry of scope.entries) {
+        let text;
+        if (entry.kind === "folder") {
+          text = `\u{1F4C1} ${entry.path}/ \u2014 all .md files beneath it`;
+        } else if (entry.heading) {
+          text = `\u{1F4C4} ${entry.path} \u2014 only under \u201C${entry.heading}\u201D`;
+        } else {
+          text = `\u{1F4C4} ${entry.path}`;
+        }
+        summary.createDiv({ cls: "setting-item-description", text });
+      }
+      summary.createDiv({
+        cls: "setting-item-description",
+        text: `Currently matching ${matches.length} file${matches.length === 1 ? "" : "s"} in the vault. New tasks go to ${primaryManagedFile(scope)}.`
+      });
+    };
+    new import_obsidian5.Setting(el).setName("Managed files").setDesc(
+      `One path per line \u2014 commas are part of a filename, not separators. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}" then "Projects/Tasks". Add #Heading to a .md path to track only that section \u2014 "Meetings/board.md#Important" ignores the rest of the note. To add a project note, right-click it and choose "Smart ToDo: track tasks in this note" instead of typing it here.`
+    ).addTextArea((text) => {
+      text.setPlaceholder(DEFAULT_MANAGED_FILE).setValue(this.plugin.settings.managedFiles).onChange(async (value) => {
+        this.plugin.settings.managedFiles = value;
+        await this.plugin.saveSettings();
+        renderSummary();
+        this.plugin.refreshViews();
+      });
+      text.inputEl.rows = 3;
+      text.inputEl.addClass("smart-todo-scope-input");
+    });
+    el.appendChild(summary);
+    renderSummary();
+    new import_obsidian5.Setting(el).setName("Create the managed file").setDesc(
+      "Creates the file new tasks are appended to, if it doesn't exist yet."
+    ).addButton(
+      (btn) => btn.setButtonText("Create now").onClick(async () => {
+        await this.plugin.ensurePrimaryFile();
+        renderSummary();
+      })
+    );
+    new import_obsidian5.Setting(el).setName("Inbox file").setDesc(
+      `Optional. Open tasks in this file are treated as untriaged captures: they show in an Inbox bucket at the top of the panel and nowhere else. Keep moves one into ${primaryManagedFile(this.plugin.scope)}. Leave blank to turn the Inbox off.`
+    ).addText((text) => {
+      text.setPlaceholder("Task inbox.md").setValue(this.plugin.settings.inboxFile).onChange(async (value) => {
+        this.plugin.settings.inboxFile = value;
+        await this.plugin.saveSettings();
+        renderInboxWarning();
+        this.plugin.refreshViews();
+      });
+      text.inputEl.addClass("smart-todo-scope-input");
+    });
+    const inboxWarning = el.createDiv();
+    const renderInboxWarning = () => {
+      inboxWarning.empty();
+      if (!this.plugin.inboxOutOfScope)
+        return;
+      const path = this.plugin.inboxPath;
+      inboxWarning.createDiv({
+        cls: "setting-item-description",
+        text: `\u26A0 ${path} isn't in the managed scope above, so it's never scanned \u2014 the Inbox will stay empty.`
+      });
+      new import_obsidian5.Setting(inboxWarning).setName("Add the inbox to managed files").addButton(
+        (btn) => btn.setButtonText("Add to scope").onClick(async () => {
+          this.plugin.settings.managedFiles = addPathToScope(
+            this.plugin.settings.managedFiles,
+            path
+          );
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+          this.display();
+        })
+      );
+    };
+    renderInboxWarning();
+    el.createEl("h3", { text: "The weekly page" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text: "A tracked path can carry {{week}}, {{week:02}} and {{year}}, which resolve each time the panel scans. Track the pattern once and the right week's page is always the one being read."
+    });
+    new import_obsidian5.Setting(el).setName("Resolve {{week}} and {{year}} in tracked paths").setDesc(
+      "Off means a path with braces in it is skipped rather than treated as a literal filename."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.weekTokensEnabled !== false).onChange(async (v) => {
+        this.plugin.settings.weekTokensEnabled = v;
+        await this.plugin.saveSettings();
+        renderSummary();
+        this.plugin.refreshViews();
+      })
+    );
+    new import_obsidian5.Setting(el).setName("Weeks start on").setDesc(
+      `Which convention your week-page numbering follows. Sunday is the US convention (week 1 contains Jan 1); Monday is ISO-8601. These disagree by one for much of the year, and the wrong one points at an adjacent week's file \u2014 which looks like the feature not working. Right now: week ${weekNumber(new Date(), (_a2 = this.plugin.settings.weekStart) != null ? _a2 : "sunday")}.`
+    ).addDropdown((dd) => {
+      var _a3;
+      dd.addOption("sunday", "Sunday (US)");
+      dd.addOption("monday", "Monday (ISO-8601)");
+      dd.setValue((_a3 = this.plugin.settings.weekStart) != null ? _a3 : "sunday").onChange(async (v) => {
+        this.plugin.settings.weekStart = v;
+        await this.plugin.saveSettings();
+        renderSummary();
+        this.plugin.refreshViews();
+        this.display();
+      });
+    });
+    new import_obsidian5.Setting(el).setName("Track this week's page").setDesc(
+      `Adds "${WEEK_PATTERN}" to the managed files above. Edit the pattern there if your weekly notes live somewhere else.`
+    ).addButton(
+      (btn) => btn.setButtonText(
+        scopeIncludesPath(this.plugin.settings.managedFiles, WEEK_PATTERN) ? "Already tracked" : "Track it"
+      ).onClick(async () => {
+        var _a3;
+        this.plugin.settings.managedFiles = addPathToScope(
+          this.plugin.settings.managedFiles,
+          WEEK_PATTERN
+        );
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+        const resolved = expandPathTokens(
+          WEEK_PATTERN,
+          new Date(),
+          (_a3 = this.plugin.settings.weekStart) != null ? _a3 : "sunday"
+        );
+        const exists = !!this.app.vault.getAbstractFileByPath(resolved);
+        new import_obsidian5.Notice(
+          exists ? `Smart ToDo: tracking ${resolved}.` : `Smart ToDo: pattern added, but ${resolved} doesn't exist yet \u2014 check the folder and the week-start setting.`,
+          8e3
+        );
+        this.display();
+      })
+    );
+    new import_obsidian5.Setting(el).setName("Headings that mean important").setDesc(
+      'Comma-separated. A task under a heading containing any of these counts as important unless the task says otherwise itself \u2014 the judgment on "Focus this week, what is Important and Urgent" was made once for the whole list rather than once per line. The panel marks inferred importance with \xA7 so you can see where it came from.'
+    ).addTextArea((text) => {
+      var _a3;
+      text.setPlaceholder(DEFAULT_IMPORTANT_HEADINGS.join(", ")).setValue(((_a3 = this.plugin.settings.importantHeadings) != null ? _a3 : []).join(", ")).onChange(async (value) => {
+        this.plugin.settings.importantHeadings = value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      });
+      text.inputEl.rows = 2;
+      text.inputEl.addClass("smart-todo-scope-input");
+    });
+    new import_obsidian5.Setting(el).setName("Split tracked notes by heading").setDesc(
+      "Inside a tracked note, group its tasks under the heading each sits below. On a weekly page those sections are most of the meaning."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.groupByHeading !== false).onChange(async (v) => {
+        this.plugin.settings.groupByHeading = v;
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      })
+    );
+    el.createEl("h3", { text: "Display" });
+    new import_obsidian5.Setting(el).setName("Metadata as chips in the editor").setDesc(
+      "Show [due:: \u2026], [effort:: \u2026] and the legacy emoji as small chips while editing a note. Put the cursor on a line to see the raw text \u2014 nothing is hidden from editing, and the file on disk is unchanged."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.metadataChips !== false).onChange(async (v) => {
+        this.plugin.settings.metadataChips = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(el).setName("Inline / menu").setDesc(
+      'Type a line, then "/" at the end of it, to turn it into a task \u2014 plain, important, or due in two days (which is what makes it urgent). It fires on a bare keystroke, so restrict or disable it here.'
+    ).addDropdown(
+      (d) => {
+        var _a3;
+        return d.addOptions({
+          everywhere: "Every note",
+          tracked: "Tracked notes only",
+          off: "Off"
+        }).setValue((_a3 = this.plugin.settings.inlineSuggest) != null ? _a3 : "everywhere").onChange(async (v) => {
+          this.plugin.settings.inlineSuggest = v;
+          await this.plugin.saveSettings();
+        });
+      }
+    );
+    const accentSetting = new import_obsidian5.Setting(el).setName("Accent").setDesc("Tints the panel: titles, the mark, the active chips, the sweep ring.");
+    const accentRow = accentSetting.controlEl.createDiv({ cls: "smart-todo-accent-row" });
+    const paintAccents = () => {
+      accentRow.empty();
+      for (const id of Object.keys(ACCENTS)) {
+        const def = ACCENTS[id];
+        const btn = accentRow.createEl("button", { cls: "smart-todo-accent" });
+        btn.style.setProperty("--swatch", def.base);
+        btn.createSpan({ cls: "smart-todo-accent-swatch" });
+        btn.createSpan({ text: def.label });
+        if (this.plugin.settings.accent === id)
+          btn.addClass("is-active");
+        btn.addEventListener("click", async () => {
+          this.plugin.settings.accent = id;
+          await this.plugin.saveSettings();
+          paintAccents();
+          this.plugin.rebuildViews();
+        });
+      }
+    };
+    paintAccents();
+    new import_obsidian5.Setting(el).setName("Opens in").setDesc(
+      "Which mode the panel starts in. Focus groups by Eisenhower quadrant, Sweep runs the timer, Lanes shows the effort board."
+    ).addDropdown((dd) => {
+      for (const m of MODES)
+        dd.addOption(m.id, m.label);
+      dd.setValue(this.plugin.settings.defaultMode).onChange(async (value) => {
+        this.plugin.settings.defaultMode = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian5.Setting(el).setName("Pushes warning threshold").setDesc(
+      "The pushes badge turns amber at or above this count \u2014 your procrastination signal. Set higher to only flag chronic avoiders."
+    ).addText(
+      (text) => text.setValue(String(this.plugin.settings.pushesWarnThreshold)).onChange(async (value) => {
+        const n = Number(value);
+        if (Number.isFinite(n) && n >= 1) {
+          this.plugin.settings.pushesWarnThreshold = Math.floor(n);
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        }
+      })
+    );
+    el.createEl("h3", { text: "Sweep" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text: "A sweep is a timed run through the three-minute tasks: one at a time, with Done / Skip / Takes longer on the keyboard."
+    });
+    new import_obsidian5.Setting(el).setName("Offer a sweep in the list").setDesc(
+      `Shows a "you have N quick wins" banner inside the task list when there are at least two. Turn this off if you'd rather only reach Sweep from the mode row.`
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.showSweepBanner).onChange(async (value) => {
+        this.plugin.settings.showSweepBanner = value;
+        await this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      })
+    );
+    new import_obsidian5.Setting(el).setName("Seconds per task").setDesc(
+      "The countdown for each task in a sweep. Three minutes is the point of the light-effort tag, so that's the default; going over doesn't stop you, it just turns the clock red."
+    ).addText(
+      (text) => text.setValue(String(this.plugin.settings.sweepSeconds)).onChange(async (value) => {
+        const n = Number(value);
+        if (Number.isFinite(n) && n >= 15) {
+          this.plugin.settings.sweepSeconds = Math.floor(n);
+          await this.plugin.saveSettings();
+        }
+      })
+    );
+    el.createEl("h3", { text: "Categories" });
+    el.createEl("p", {
+      cls: "setting-item-description",
+      text: "Tasks carry one of three categories \u2014 Betaworks, Personal, Health \u2014 stored in the same [project:: \u2026] field, so Dataview and Tasks queries keep working. Imported tasks with older project names can be folded onto the three in one pass; you'll see every change first."
+    });
+    new import_obsidian5.Setting(el).setName("Fold projects into categories").setDesc(
+      "Previews the retag, then applies it one line at a time. Tasks with no project are left alone."
+    ).addButton(
+      (btn) => btn.setButtonText("Review changes").onClick(() => void this.plugin.openCategoryMigration())
+    );
+  }
+};
+
+// src/add-task-modal.ts
+var import_obsidian6 = require("obsidian");
+var AddTaskModal = class extends import_obsidian6.Modal {
+  constructor(app, onSubmit) {
+    super(app);
+    this.onSubmit = onSubmit;
+    this.title = "";
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Add task" });
+    const commit = () => {
+      const value = this.title.trim();
+      if (!value)
+        return;
+      this.close();
+      this.onSubmit(value);
+    };
+    new import_obsidian6.Setting(contentEl).setName("Task").addText((text) => {
+      text.setPlaceholder("What needs doing?").onChange((value) => {
+        this.title = value;
+      });
+      text.inputEl.addClass("smart-todo-modal-input");
+      text.inputEl.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          commit();
+        }
+      });
+      window.setTimeout(() => text.inputEl.focus(), 0);
+    });
+    new import_obsidian6.Setting(contentEl).addButton(
+      (btn) => btn.setButtonText("Add").setCta().onClick(commit)
+    );
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
 
 // src/nlparse.ts
 var WEEKDAYS = [
@@ -1855,211 +2345,14 @@ function buildCaptureBody(app, input) {
 }
 
 // src/view.ts
-var import_obsidian9 = require("obsidian");
-
-// src/filters.ts
-var URGENT_WINDOW_DAYS = 2;
-var DEFER_HORIZON_DAYS = 7;
-function isResting(task, today = startOfToday()) {
-  return !!task.defer && task.defer.getTime() > today.getTime();
-}
-function isParked(task, today = startOfToday()) {
-  if (!task.defer)
-    return false;
-  return task.defer.getTime() > addDays(today, DEFER_HORIZON_DAYS).getTime();
-}
-function isOverdue(task, today = startOfToday()) {
-  return task.status === "open" && !!task.due && task.due.getTime() < today.getTime();
-}
-function isDueToday(task, today = startOfToday()) {
-  return task.status === "open" && !!task.due && isSameDay(task.due, today);
-}
-function isUrgent(task, today = startOfToday()) {
-  if (!task.due)
-    return false;
-  if (isResting(task, today))
-    return false;
-  const horizon = addDays(today, URGENT_WINDOW_DAYS);
-  return task.due.getTime() <= horizon.getTime();
-}
-function isImportant(task) {
-  return task.important === true;
-}
-function quadrantOf(task, today = startOfToday()) {
-  return quadrantFor(isUrgent(task, today), isImportant(task));
-}
-function fitsBudget(task, budget) {
-  if (budget === "any")
-    return true;
-  if (!task.effort)
-    return false;
-  const def = BUDGETS.find((b) => b.id === budget);
-  return !!def && def.fits.includes(task.effort);
-}
-function matchesCategory(task, filter) {
-  if (filter === "all")
-    return true;
-  return categoryFor(task.project) === filter;
-}
-function estimateMinutes(tasks) {
-  return tasks.reduce((sum, t) => sum + (t.effort ? EFFORT_MINUTES[t.effort] : 0), 0);
-}
-function formatDuration(minutes) {
-  if (minutes <= 0)
-    return "\u2014";
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h === 0)
-    return `${m}m`;
-  if (m === 0)
-    return `${h}h`;
-  return `${h}h ${m}m`;
-}
-function matchesHorizon(task, horizon, today = startOfToday()) {
-  if (horizon === "done")
-    return task.status === "done";
-  if (task.status !== "open")
-    return false;
-  switch (horizon) {
-    case "today":
-      return !isResting(task, today) && !!task.due && task.due.getTime() <= today.getTime();
-    case "week": {
-      const end = addDays(today, 6);
-      if (task.defer && task.defer.getTime() > end.getTime())
-        return false;
-      return !!task.due && task.due.getTime() <= end.getTime();
-    }
-    case "deferred":
-      return isResting(task, today);
-    default:
-      return !isParked(task, today);
-  }
-}
-function matchesSearch(tasks, search) {
-  const needle = search.trim().toLowerCase();
-  if (!needle)
-    return [];
-  return tasks.filter((t) => t.title.toLowerCase().includes(needle));
-}
-function selectTasks(tasks, query, today = startOfToday()) {
-  const needle = query.search.trim().toLowerCase();
-  const everywhere = !!needle && !!query.searchEverywhere;
-  const out = tasks.filter((t) => {
-    if (needle && !t.title.toLowerCase().includes(needle))
-      return false;
-    if (everywhere)
-      return true;
-    if (!matchesHorizon(t, query.horizon, today))
-      return false;
-    if (!matchesCategory(t, query.category))
-      return false;
-    if (!fitsBudget(t, query.budget))
-      return false;
-    return true;
-  });
-  if (everywhere) {
-    return out.sort((a, b) => {
-      if (a.status !== b.status)
-        return a.status === "open" ? -1 : 1;
-      return a.status === "open" ? compareForToday(a, b, today) : compareCompleted(a, b);
-    });
-  }
-  if (query.horizon === "done")
-    return out.sort(compareCompleted);
-  if (query.horizon === "deferred") {
-    return out.sort(
-      (a, b) => {
-        var _a2, _b, _c, _d;
-        return ((_b = (_a2 = a.defer) == null ? void 0 : _a2.getTime()) != null ? _b : 0) - ((_d = (_c = b.defer) == null ? void 0 : _c.getTime()) != null ? _d : 0);
-      }
-    );
-  }
-  return out.sort((a, b) => compareForToday(a, b, today));
-}
-function groupByHeading(tasks) {
-  var _a2, _b;
-  const sections = [];
-  const index = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    const key = (_a2 = task.heading) != null ? _a2 : "\0none";
-    let section = index.get(key);
-    if (!section) {
-      section = { heading: (_b = task.heading) != null ? _b : null, tasks: [] };
-      index.set(key, section);
-      sections.push(section);
-    }
-    section.tasks.push(task);
-  }
-  return sections;
-}
-function isContainer(task) {
-  var _a2;
-  return ((_a2 = task.openChildren) != null ? _a2 : 0) > 0;
-}
-function groupBySource(tasks, isHome) {
-  const main = [];
-  const byPath = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    if (isHome(task.filePath)) {
-      main.push(task);
-      continue;
-    }
-    const bucket = byPath.get(task.filePath);
-    if (bucket)
-      bucket.push(task);
-    else
-      byPath.set(task.filePath, [task]);
-  }
-  return {
-    main,
-    groups: [...byPath.entries()].map(([path, groupTasks]) => ({ path, tasks: groupTasks }))
-  };
-}
-function groupByQuadrant(tasks, today = startOfToday()) {
-  const out = { do: [], schedule: [], delegate: [], drop: [] };
-  for (const t of tasks)
-    out[quadrantOf(t, today)].push(t);
-  return out;
-}
-function compareForToday(a, b, today = startOfToday()) {
-  const rank = (t) => {
-    if (isOverdue(t, today))
-      return 0;
-    if (isDueToday(t, today))
-      return 1;
-    if (t.due)
-      return 2;
-    return 3;
-  };
-  const byRank = rank(a) - rank(b);
-  if (byRank !== 0)
-    return byRank;
-  if (a.due && b.due && a.due.getTime() !== b.due.getTime()) {
-    return a.due.getTime() - b.due.getTime();
-  }
-  const effortOf = (t) => t.effort ? EFFORT_WEIGHT[t.effort] : 0;
-  const byEffort = effortOf(b) - effortOf(a);
-  if (byEffort !== 0)
-    return byEffort;
-  const byPushes = b.pushes - a.pushes;
-  if (byPushes !== 0)
-    return byPushes;
-  return a.title.localeCompare(b.title);
-}
-function compareCompleted(a, b) {
-  const at = a.doneDate ? a.doneDate.getTime() : 0;
-  const bt = b.doneDate ? b.doneDate.getTime() : 0;
-  if (at !== bt)
-    return bt - at;
-  return a.title.localeCompare(b.title);
-}
+var import_obsidian10 = require("obsidian");
 
 // src/edit-task-modal.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 function dateInputValue(date) {
   return date ? formatDate(date) : "";
 }
-var EditTaskModal = class extends import_obsidian5.Modal {
+var EditTaskModal = class extends import_obsidian7.Modal {
   constructor(app, task, onSubmit, onReveal, keepTarget = null) {
     super(app);
     this.task = task;
@@ -2251,7 +2544,7 @@ var EditTaskModal = class extends import_obsidian5.Modal {
       cls: "smart-todo-edit-reveal",
       text: "Open in note"
     });
-    (0, import_obsidian5.setIcon)(reveal.createSpan({ cls: "smart-todo-edit-reveal-icon" }), "file-text");
+    (0, import_obsidian7.setIcon)(reveal.createSpan({ cls: "smart-todo-edit-reveal-icon" }), "file-text");
     reveal.addEventListener("click", () => {
       this.close();
       this.onReveal();
@@ -2329,7 +2622,7 @@ var EditTaskModal = class extends import_obsidian5.Modal {
     const d = this.draft;
     const t = this.task;
     if (!d.title.trim()) {
-      new import_obsidian5.Notice("Smart ToDo: a task needs a title.", 4e3);
+      new import_obsidian7.Notice("Smart ToDo: a task needs a title.", 4e3);
       return;
     }
     if (d.title.trim() !== t.title)
@@ -2357,14 +2650,14 @@ var EditTaskModal = class extends import_obsidian5.Modal {
 };
 
 // src/sweep-modal.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var NEXT_EFFORT = {
   light: "moderate",
   moderate: "heavy",
   heavy: "deep",
   deep: null
 };
-var SweepModal = class extends import_obsidian6.Modal {
+var SweepModal = class extends import_obsidian8.Modal {
   constructor(app, queue, seconds, onFinish) {
     super(app);
     this.index = 0;
@@ -2446,7 +2739,7 @@ var SweepModal = class extends import_obsidian6.Modal {
     }
     const head = this.bodyEl.createDiv({ cls: "stw-sweep-head" });
     const badge = head.createSpan({ cls: "stw-sweep-badge" });
-    (0, import_obsidian6.setIcon)(badge.createSpan({ cls: "stw-sweep-badge-icon" }), "zap");
+    (0, import_obsidian8.setIcon)(badge.createSpan({ cls: "stw-sweep-badge-icon" }), "zap");
     badge.createSpan({
       text: `Quick win ${this.index + 1} of ${this.queue.length}`
     });
@@ -2536,8 +2829,8 @@ var SweepModal = class extends import_obsidian6.Modal {
 };
 
 // src/quick-switch.ts
-var import_obsidian7 = require("obsidian");
-var QuickSwitchModal = class extends import_obsidian7.SuggestModal {
+var import_obsidian9 = require("obsidian");
+var QuickSwitchModal = class extends import_obsidian9.SuggestModal {
   constructor(app, tasks, onPick) {
     super(app);
     this.onPick = onPick;
@@ -2622,169 +2915,8 @@ function buildRows(tasks) {
   return rows;
 }
 
-// src/task-suggest.ts
-var import_obsidian8 = require("obsidian");
-var TASK_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+\[.\]\s*)/;
-var BULLET_PREFIX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)/;
-var INDENT_RE = /^(\s*)/;
-var NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
-var _a;
-var urgentWindow = (_a = NUMBER_WORDS[URGENT_WINDOW_DAYS]) != null ? _a : String(URGENT_WINDOW_DAYS);
-var ACTIONS = [
-  {
-    id: "plain",
-    label: "task, triage later",
-    keywords: ["add", "task", "todo", "plain", "triage"]
-  },
-  {
-    id: "important",
-    label: "important",
-    keywords: ["important", "priority", "high", "matters"]
-  },
-  {
-    id: "urgent",
-    label: `urgent (due in ${urgentWindow} days)`,
-    keywords: ["urgent", "due", "soon", "now", "today"]
-  }
-];
-var SPIRAL_ICON_ID = "smart-todo-spiral";
-var SPIRAL_ICON_SVG = `<g transform="scale(4.1667)" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12 m 0 0 c 0.5 0 1 0 1 -1 c 0 -1.5 -1.5 -1.5 -2 -1 c -1.5 1 -1.5 3.5 0.5 4 c 3 0.5 4 -3 2 -5 c -3 -3 -7 0 -6 4 c 1 5 8 6 10 1 c 2 -5 -3 -11 -9 -9 c -6 2 -6 10 0 12" /></g>`;
-function triggerQuery(lineUpToCursor) {
-  var _a2, _b, _c, _d;
-  const m = /\/([A-Za-z]*)$/.exec(lineUpToCursor);
-  if (!m)
-    return null;
-  const slashAt = lineUpToCursor.length - m[0].length;
-  const before = lineUpToCursor.slice(0, slashAt);
-  if (!before.trim())
-    return null;
-  const prev = (_a2 = before.at(-1)) != null ? _a2 : "";
-  if (prev === "/" || prev === ":" || prev === ".")
-    return null;
-  const word = (_c = (_b = /\S*$/.exec(lineUpToCursor)) == null ? void 0 : _b[0]) != null ? _c : "";
-  if (((_d = word.match(/\//g)) != null ? _d : []).length > 1)
-    return null;
-  if (/\d\s*$/.test(before))
-    return null;
-  if (/https?:$|\]\($/.test(before.trimEnd()))
-    return null;
-  return m[1];
-}
-function inVerbatimRegion(editor, line) {
-  let fenced = false;
-  for (let i = 0; i < line; i++) {
-    const text = editor.getLine(i);
-    if (/^\s*(```|~~~)/.test(text))
-      fenced = !fenced;
-    if (i === 0 && text.trim() === "---")
-      fenced = true;
-    else if (fenced && i > 0 && text.trim() === "---" && editor.getLine(0).trim() === "---") {
-      fenced = false;
-    }
-  }
-  return fenced;
-}
-function applyAction(line, action, today = startOfToday()) {
-  var _a2, _b;
-  let body = line.replace(/\s+$/, "");
-  if (!TASK_PREFIX_RE.test(body)) {
-    const bullet = BULLET_PREFIX_RE.exec(body);
-    if (bullet) {
-      body = `${bullet[1]}[ ] ${body.slice(bullet[1].length)}`;
-    } else {
-      const indent = (_b = (_a2 = INDENT_RE.exec(body)) == null ? void 0 : _a2[1]) != null ? _b : "";
-      body = `${indent}- [ ] ${body.slice(indent.length)}`;
-    }
-  }
-  if (action === "important")
-    return setInlineField(body, "important", "true");
-  if (action === "urgent") {
-    return setInlineField(body, "due", formatDate(addDays(today, URGENT_WINDOW_DAYS)));
-  }
-  return body;
-}
-var TaskSuggest = class extends import_obsidian8.EditorSuggest {
-  constructor(app, plugin) {
-    super(app);
-    this.plugin = plugin;
-  }
-  onTrigger(cursor, editor, file) {
-    const mode = this.plugin.settings.inlineSuggest;
-    if (mode === "off")
-      return null;
-    if (mode === "tracked" && !(file && this.plugin.isInManagedScope(file.path)))
-      return null;
-    const upToCursor = editor.getLine(cursor.line).slice(0, cursor.ch);
-    const query = triggerQuery(upToCursor);
-    if (query === null)
-      return null;
-    if (inVerbatimRegion(editor, cursor.line))
-      return null;
-    return {
-      start: { line: cursor.line, ch: cursor.ch - query.length - 1 },
-      end: cursor,
-      query
-    };
-  }
-  getSuggestions(context) {
-    const q = context.query.toLowerCase();
-    return ACTIONS.filter(
-      (a) => !q || a.keywords.some((k) => k.startsWith(q)) || a.id.startsWith(q)
-    );
-  }
-  renderSuggestion(item, el) {
-    el.addClass("smart-todo-suggest");
-    const icon = el.createSpan({ cls: `smart-todo-suggest-icon is-${item.id}` });
-    (0, import_obsidian8.setIcon)(icon, SPIRAL_ICON_ID);
-    el.createDiv({ cls: "smart-todo-suggest-title", text: item.label });
-  }
-  selectSuggestion(item) {
-    const ctx = this.context;
-    if (!ctx)
-      return;
-    const { editor, start, end, file } = ctx;
-    const line = editor.getLine(start.line);
-    const stripped = line.slice(0, start.ch) + line.slice(end.ch);
-    const next = applyAction(stripped, item.id);
-    editor.replaceRange(
-      next,
-      { line: start.line, ch: 0 },
-      { line: start.line, ch: line.length }
-    );
-    editor.setCursor({ line: start.line, ch: next.length });
-    this.close();
-    void this.trackOnCapture(file);
-  }
-  /**
-   * Capturing into a note tracks that note.
-   *
-   * 0.12 only *warned* that an untracked note wouldn't show, with a link to fix
-   * it. That was wrong in practice: the task is written, the toast goes away,
-   * and what's left is a real markdown checkbox the panel silently refuses to
-   * list — which reads as the plugin being broken, and sends you to the search
-   * box to type the task a second time.
-   *
-   * Deliberately choosing "task" in this plugin's own menu *is* the request to
-   * manage it, so scope follows the capture. Announced and undoable, because it
-   * changes a setting the user didn't open.
-   */
-  async trackOnCapture(file) {
-    if (!file || this.plugin.isInManagedScope(file.path))
-      return;
-    await this.plugin.toggleTracked(file.path, { silent: true });
-    const frag = document.createDocumentFragment();
-    frag.createDiv({ text: `Now tracking ${file.basename}.` });
-    const link = frag.createEl("a", { text: "Undo", href: "#" });
-    link.addEventListener("click", (evt) => {
-      evt.preventDefault();
-      void this.plugin.toggleTracked(file.path);
-    });
-    new import_obsidian8.Notice(frag, 6e3);
-  }
-};
-
 // src/view.ts
-var SmartTodoView = class extends import_obsidian9.ItemView {
+var SmartTodoView = class extends import_obsidian10.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.mode = "focus";
@@ -2851,7 +2983,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     const bar = root.createDiv({ cls: "stw-titlebar" });
     const brand = bar.createDiv({ cls: "stw-brand" });
     const mark = brand.createSpan({ cls: "stw-mark" });
-    (0, import_obsidian9.setIcon)(mark, "check");
+    (0, import_obsidian10.setIcon)(mark, "check");
     brand.createSpan({ cls: "stw-brand-name", text: "Smart ToDo" });
     bar.createSpan({
       cls: "stw-date",
@@ -2865,13 +2997,13 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       cls: "stw-icon-btn",
       attr: { "aria-label": "Rescan vault" }
     });
-    (0, import_obsidian9.setIcon)(refresh, "refresh-cw");
+    (0, import_obsidian10.setIcon)(refresh, "refresh-cw");
     refresh.addEventListener("click", () => void this.refresh());
     const add = bar.createEl("button", {
       cls: "stw-icon-btn is-primary",
       attr: { "aria-label": "Add task" }
     });
-    (0, import_obsidian9.setIcon)(add, "plus");
+    (0, import_obsidian10.setIcon)(add, "plus");
     add.addEventListener("click", () => this.focusCapture());
   }
   /**
@@ -2882,13 +3014,13 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
   renderSearch(root) {
     const wrap = root.createDiv({ cls: "stw-search" });
     const icon = wrap.createSpan({ cls: "stw-search-icon" });
-    (0, import_obsidian9.setIcon)(icon, "search");
+    (0, import_obsidian10.setIcon)(icon, "search");
     this.searchInputEl = wrap.createEl("input", {
       cls: "stw-search-input",
       attr: { type: "text", placeholder: "work, quick, do first\u2026" }
     });
     const clear = wrap.createSpan({ cls: "stw-search-clear" });
-    (0, import_obsidian9.setIcon)(clear, "x");
+    (0, import_obsidian10.setIcon)(clear, "x");
     clear.setAttribute("aria-label", "Clear search");
     const syncClear = () => clear.toggleClass("is-visible", this.search.length > 0);
     this.searchInputEl.addEventListener("input", () => {
@@ -3012,9 +3144,9 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     const caps = row.createDiv({ cls: "stw-modes" });
     for (const m of MODES) {
       const btn = caps.createEl("button", { cls: "stw-mode" });
-      (0, import_obsidian9.setTooltip)(btn, m.label, { placement: "bottom" });
+      (0, import_obsidian10.setTooltip)(btn, m.label, { placement: "bottom" });
       const ic = btn.createSpan({ cls: "stw-mode-icon" });
-      (0, import_obsidian9.setIcon)(ic, m.icon);
+      (0, import_obsidian10.setIcon)(ic, m.icon);
       btn.createSpan({ cls: "stw-mode-count", text: String(this.countForMode(m.id)) });
       if (m.id === this.mode)
         btn.addClass("is-active");
@@ -3026,13 +3158,13 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     }
     row.createDiv({ cls: "stw-row-divider" });
     const when = row.createEl("button", { cls: "stw-when" });
-    (0, import_obsidian9.setTooltip)(when, "When", { placement: "bottom" });
+    (0, import_obsidian10.setTooltip)(when, "When", { placement: "bottom" });
     when.createSpan({
       text: (_b = (_a2 = HORIZONS.find((h) => h.id === this.horizon)) == null ? void 0 : _a2.label) != null ? _b : "Today"
     });
-    (0, import_obsidian9.setIcon)(when.createSpan({ cls: "stw-when-caret" }), "chevron-down");
+    (0, import_obsidian10.setIcon)(when.createSpan({ cls: "stw-when-caret" }), "chevron-down");
     when.addEventListener("click", (evt) => {
-      const menu = new import_obsidian9.Menu();
+      const menu = new import_obsidian10.Menu();
       for (const h of HORIZONS) {
         menu.addItem(
           (item) => item.setTitle(h.label).setChecked(this.horizon === h.id).onClick(() => {
@@ -3329,7 +3461,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     const wrap = this.bodyEl.createDiv({ cls: "stw-inbox" });
     const head = wrap.createDiv({ cls: "stw-inbox-head" });
     const caret = head.createSpan({ cls: "stw-inbox-caret" });
-    (0, import_obsidian9.setIcon)(caret, this.inboxOpen ? "chevron-down" : "chevron-right");
+    (0, import_obsidian10.setIcon)(caret, this.inboxOpen ? "chevron-down" : "chevron-right");
     head.createSpan({ cls: "stw-inbox-title", text: "Inbox" });
     head.createSpan({ cls: "stw-inbox-count", text: String(inbox.length) });
     head.setAttr(
@@ -3378,7 +3510,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       keep.disabled = true;
       const ok = await safeWrite(() => moveTaskLine(this.app, task, target));
       if (ok)
-        new import_obsidian9.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
+        new import_obsidian10.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
       await this.refresh();
     });
     const edit = actions.createEl("button", { cls: "stw-inbox-btn", text: "Edit" });
@@ -3534,8 +3666,8 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       cls: `stw-source-head${collapsed ? " is-collapsed" : ""}`
     });
     const caret = head.createSpan({ cls: "stw-source-caret" });
-    (0, import_obsidian9.setIcon)(caret, collapsed ? "chevron-right" : "chevron-down");
-    (0, import_obsidian9.setIcon)(head.createSpan({ cls: "stw-source-head-icon" }), "file-text");
+    (0, import_obsidian10.setIcon)(caret, collapsed ? "chevron-right" : "chevron-down");
+    (0, import_obsidian10.setIcon)(head.createSpan({ cls: "stw-source-head-icon" }), "file-text");
     head.createSpan({ cls: "stw-source-title", text: label });
     const minutes = estimateMinutes(group.tasks);
     head.createSpan({
@@ -3551,7 +3683,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       var _a2;
       evt.preventDefault();
       evt.stopPropagation();
-      const menu = new import_obsidian9.Menu();
+      const menu = new import_obsidian10.Menu();
       menu.addItem(
         (item) => item.setTitle("Rename this group\u2026").setIcon("pencil").onClick(() => this.renameSource(group.path, head))
       );
@@ -3695,7 +3827,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
   renderSweepBanner(quickies) {
     const banner = this.bodyEl.createDiv({ cls: "stw-sweep-banner" });
     const icon = banner.createSpan({ cls: "stw-sweep-banner-icon" });
-    (0, import_obsidian9.setIcon)(icon, "zap");
+    (0, import_obsidian10.setIcon)(icon, "zap");
     const text = banner.createDiv({ cls: "stw-sweep-banner-text" });
     text.createDiv({
       cls: "stw-sweep-banner-head",
@@ -3830,6 +3962,8 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     titleEl.addEventListener("click", () => this.openEditor(task));
     titleEl.setAttr("title", `Click to edit \xB7 ${task.filePath}:${task.lineNumber + 1}`);
     const meta = main.createDiv({ cls: "stw-task-meta" });
+    if (!opts.depth)
+      this.renderParentChip(meta, task);
     if (isContainer(task)) {
       meta.createSpan({
         cls: "stw-subcount",
@@ -3889,7 +4023,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
           title: "Push to tomorrow (defer until then). Right-click for longer."
         }
       });
-      (0, import_obsidian9.setIcon)(pushBtn, "chevrons-right");
+      (0, import_obsidian10.setIcon)(pushBtn, "chevrons-right");
       pushBtn.addEventListener("click", async (evt) => {
         evt.stopPropagation();
         pushBtn.disabled = true;
@@ -3898,7 +4032,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       pushBtn.addEventListener("contextmenu", (evt) => {
         evt.preventDefault();
         evt.stopPropagation();
-        const menu = new import_obsidian9.Menu();
+        const menu = new import_obsidian10.Menu();
         for (const [days, label] of [
           [1, "Tomorrow"],
           [2, "In 2 days"],
@@ -3924,7 +4058,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     const ok = await safeWrite(() => pushTask(this.app, task, days));
     if (ok) {
       const when = pushTargetDate(task, days);
-      new import_obsidian9.Notice(
+      new import_obsidian10.Notice(
         `Pushed to ${this.humanDate(when, startOfToday())} \u2014 deferred until then, so it's out of Do First.`,
         4e3
       );
@@ -3953,7 +4087,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       attr: { "aria-label": "Click to change" }
     });
     if (task.effort === "light")
-      (0, import_obsidian9.setIcon)(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
+      (0, import_obsidian10.setIcon)(pill.createSpan({ cls: "stw-effort-bolt" }), "zap");
     pill.createSpan({ text: EFFORT_LABEL[task.effort] });
     pill.addEventListener("click", open);
     pill.addEventListener("contextmenu", open);
@@ -3972,7 +4106,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
         "aria-label": state === "yes" ? "important" : state === "no" ? "not important" : "set importance"
       }
     });
-    (0, import_obsidian9.setIcon)(star, SPIRAL_ICON_ID);
+    (0, import_obsidian10.setIcon)(star, SPIRAL_ICON_ID);
     star.addEventListener("click", (evt) => {
       evt.stopPropagation();
       const next = task.important === null ? true : task.important === true ? false : null;
@@ -3985,7 +4119,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     });
   }
   showEffortMenu(evt, task) {
-    const menu = new import_obsidian9.Menu();
+    const menu = new import_obsidian10.Menu();
     for (const effort of EFFORTS) {
       menu.addItem(
         (item) => item.setTitle(EFFORT_LABEL[effort]).setChecked(task.effort === effort).onClick(async () => {
@@ -4023,12 +4157,57 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       cls: "stw-source-chip",
       attr: { "aria-label": `From ${task.filePath} \u2014 click to open` }
     });
-    (0, import_obsidian9.setIcon)(chip.createSpan({ cls: "stw-source-icon" }), "file-text");
+    (0, import_obsidian10.setIcon)(chip.createSpan({ cls: "stw-source-icon" }), "file-text");
     chip.createSpan({ text: name });
     chip.addEventListener("click", (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
       void this.revealTask(task);
+    });
+  }
+  /**
+   * The nearest ancestor task, from the full scan rather than the visible set.
+   *
+   * Walks the whole chain and takes the *top* of it, not the immediate parent:
+   * two levels of indent under "Fund 4 build to 30M" is still Fund 4 work, and
+   * naming the middle step tells you less than naming the project does.
+   */
+  rootProject(task) {
+    let current = task;
+    let root = null;
+    for (let i = 0; i < 8; i++) {
+      if (current.parentLine === null || current.parentLine === void 0)
+        break;
+      const parent = this.tasks.find(
+        (t) => t.filePath === current.filePath && t.lineNumber === current.parentLine
+      );
+      if (!parent)
+        break;
+      root = parent;
+      current = parent;
+    }
+    return root;
+  }
+  renderParentChip(parent, task) {
+    const project = this.rootProject(task);
+    if (!project)
+      return;
+    const label = displayTitle(project.title).trim();
+    if (!label)
+      return;
+    const chip = parent.createSpan({
+      cls: "stw-parent-chip",
+      attr: {
+        "aria-label": `Part of \u201C${label}\u201D \u2014 click to open it`,
+        title: `Part of \u201C${label}\u201D`
+      }
+    });
+    chip.createSpan({ cls: "stw-parent-mark", text: "\u21B3" });
+    chip.createSpan({ cls: "stw-parent-label", text: label });
+    chip.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void this.revealTask(project);
     });
   }
   renderCategoryChip(parent, task) {
@@ -4060,7 +4239,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
   }
   showCategoryMenu(evt, task) {
     const current = asCategory(task.project);
-    const menu = new import_obsidian9.Menu();
+    const menu = new import_obsidian10.Menu();
     for (const cat of CATEGORIES) {
       menu.addItem(
         (item) => item.setTitle(CATEGORY_LABEL[cat]).setChecked(current === cat).onClick(async () => {
@@ -4099,7 +4278,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
           const line = buildPatchedLine(task, patch);
           const ok = await safeWrite(() => moveTaskLine(this.app, task, target, line));
           if (ok)
-            new import_obsidian9.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
+            new import_obsidian10.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
           await this.refresh();
           return;
         }
@@ -4137,7 +4316,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
 };
 
 // src/categorize.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 function planCategoryMigration(tasks) {
   var _a2;
   const changes = [];
@@ -4167,7 +4346,7 @@ function groupPlan(changes) {
     froms: Array.from(byTarget.get(cat).entries()).map(([from, count]) => ({ from, count })).sort((a, b) => b.count - a.count || a.from.localeCompare(b.from))
   }));
 }
-var CategoryMigrationModal = class extends import_obsidian10.Modal {
+var CategoryMigrationModal = class extends import_obsidian11.Modal {
   constructor(app, changes, onApply) {
     super(app);
     this.changes = changes;
@@ -4230,7 +4409,7 @@ var CategoryMigrationModal = class extends import_obsidian10.Modal {
 
 // src/main.ts
 var REFRESH_DEBOUNCE_MS = 250;
-var SmartTodoPlugin = class extends import_obsidian11.Plugin {
+var SmartTodoPlugin = class extends import_obsidian12.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4248,7 +4427,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
   async onload() {
     await this.loadSettings();
     this.applyAccent();
-    (0, import_obsidian11.addIcon)(SPIRAL_ICON_ID, SPIRAL_ICON_SVG);
+    (0, import_obsidian12.addIcon)(SPIRAL_ICON_ID, SPIRAL_ICON_SVG);
     this.registerEditorExtension(this.editorExtensions);
     this.applyChipExtension();
     this.registerEditorSuggest(new TaskSuggest(this.app, this));
@@ -4290,7 +4469,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
       callback: () => {
         void this.withView((view) => {
           if (!view.sweepNow()) {
-            new import_obsidian11.Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4e3);
+            new import_obsidian12.Notice("Smart ToDo: nothing tagged 3 min in the current filter.", 4e3);
           }
         });
       }
@@ -4308,15 +4487,31 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
         return true;
       }
     });
+    this.addCommand({
+      id: "track-section",
+      name: "Track one section of this note",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md")
+          return false;
+        if (checking)
+          return true;
+        void this.trackSection(file);
+        return true;
+      }
+    });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian11.TFile) || file.extension !== "md")
+        if (!(file instanceof import_obsidian12.TFile) || file.extension !== "md")
           return;
         if (samePath(file.path, this.primaryFile))
           return;
         const tracked = scopeIncludesPath(this.settings.managedFiles, file.path, this.scopeOptions);
         menu.addItem(
           (item) => item.setTitle(tracked ? "Smart ToDo: stop tracking tasks here" : "Smart ToDo: track tasks in this note").setIcon(SPIRAL_ICON_ID).onClick(() => void this.toggleTracked(file.path))
+        );
+        menu.addItem(
+          (item) => item.setTitle("Smart ToDo: track one section of this note\u2026").setIcon(SPIRAL_ICON_ID).onClick(() => void this.trackSection(file))
         );
       })
     );
@@ -4344,7 +4539,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
     });
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian11.TFile && this.isInManagedScope(file.path)) {
+        if (file instanceof import_obsidian12.TFile && this.isInManagedScope(file.path)) {
           this.scheduleRefresh();
         }
       })
@@ -4377,7 +4572,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
   async migrateLegacyScopeList() {
     const migrated = splitLegacyCommaList(
       this.settings.managedFiles,
-      (path) => this.app.vault.getAbstractFileByPath(path) instanceof import_obsidian11.TFile
+      (path) => this.app.vault.getAbstractFileByPath(path) instanceof import_obsidian12.TFile
     );
     if (migrated === null)
       return;
@@ -4434,7 +4629,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
     var _a2;
     if (samePath(path, this.primaryFile)) {
       if (!opts.silent) {
-        new import_obsidian11.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
+        new import_obsidian12.Notice("Smart ToDo: this is the main task file \u2014 it's always tracked.", 4e3);
       }
       return;
     }
@@ -4446,14 +4641,14 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
       return;
     const name = (_a2 = path.split("/").pop()) != null ? _a2 : path;
     if (tracked) {
-      new import_obsidian11.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);
+      new import_obsidian12.Notice(`Smart ToDo: no longer tracking ${name}. The note is unchanged.`, 4e3);
       return;
     }
     const open = (await this.scan()).filter(
       (t) => samePath(t.filePath, path) && t.status === "open"
     );
     if (open.length === 0) {
-      new import_obsidian11.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
+      new import_obsidian12.Notice(`Smart ToDo: tracking ${name} \u2014 no open tasks in it yet.`, 5e3);
       return;
     }
     const undated = open.filter((t) => !t.due).length;
@@ -4467,10 +4662,52 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
       caveats.push("none are sized, so they only show under the Any budget");
     else if (unsized > 0)
       caveats.push(`${unsized} unsized`);
-    new import_obsidian11.Notice(
+    new import_obsidian12.Notice(
       `Smart ToDo: tracking ${name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.` + (caveats.length > 0 ? ` ${caveats.join("; ")}.` : ""),
       8e3
     );
+  }
+  /**
+   * Narrow a note's tracking to one of its headings.
+   *
+   * Replaces whatever is already there for that file rather than adding
+   * alongside it — `kanban.md` and `kanban.md#Important` in the same list
+   * means the unrestricted entry wins and the narrowing silently does
+   * nothing, which is worse than refusing.
+   */
+  async trackSection(file) {
+    let content;
+    try {
+      content = await this.app.vault.read(file);
+    } catch (e) {
+      new import_obsidian12.Notice(`Smart ToDo: couldn't read ${file.name}.`, 4e3);
+      return;
+    }
+    HeadingScopeModal.open(this.app, file.name, content, async (heading) => {
+      if (samePath(file.path, this.primaryFile) && heading) {
+        new import_obsidian12.Notice(
+          "Smart ToDo: this is the main task file \u2014 new tasks are appended to the end, so it can't be narrowed to one section.",
+          6e3
+        );
+        return;
+      }
+      const withoutFile = removePathFromScope(
+        this.settings.managedFiles,
+        file.path,
+        this.scopeOptions
+      );
+      const entry = heading ? `${file.path}#${heading}` : file.path;
+      this.settings.managedFiles = addPathToScope(withoutFile, entry);
+      await this.saveSettings();
+      this.refreshViews();
+      const open = (await this.scan()).filter(
+        (t) => samePath(t.filePath, file.path) && t.status === "open"
+      );
+      new import_obsidian12.Notice(
+        heading ? `Smart ToDo: tracking only \u201C${heading}\u201D in ${file.name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.` : `Smart ToDo: tracking all of ${file.name} \u2014 ${open.length} open task${open.length === 1 ? "" : "s"}.`,
+        6e3
+      );
+    });
   }
   /**
    * Options shared by every scope call, so a `{{week}}` entry resolves to the
@@ -4539,7 +4776,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
       return;
     try {
       await ensureManagedFile(this.app, path);
-      new import_obsidian11.Notice(`Smart ToDo: created ${path}`, 4e3);
+      new import_obsidian12.Notice(`Smart ToDo: created ${path}`, 4e3);
     } catch (e) {
       console.error("[smart-todo] could not create managed file", path, e);
     }
@@ -4581,7 +4818,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
           break;
         applied++;
       }
-      new import_obsidian11.Notice(
+      new import_obsidian12.Notice(
         `Smart ToDo: retagged ${applied} of ${changes.length} task${changes.length === 1 ? "" : "s"}.`,
         5e3
       );
@@ -4622,7 +4859,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
         });
         if (!ok)
           return;
-        new import_obsidian11.Notice(
+        new import_obsidian12.Notice(
           moved === 0 ? "Smart ToDo: nothing left to archive." : `Smart ToDo: archived ${moved} task${moved === 1 ? "" : "s"} in ${(_a2 = file.path.split("/").pop()) != null ? _a2 : file.path}.`,
           5e3
         );

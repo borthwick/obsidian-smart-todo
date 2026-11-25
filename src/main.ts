@@ -10,6 +10,7 @@ import { Extension } from "@codemirror/state";
 import { parseTasksFromContent, scanScope } from "./parser";
 import { metadataChipsExtension } from "./metadata-chips";
 import { ArchiveBacklogModal } from "./archive-modal";
+import { HeadingScopeModal } from "./heading-scope-modal";
 import {
   addPathToScope,
   isInScope,
@@ -152,6 +153,18 @@ export default class SmartTodoPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "track-section",
+      name: "Track one section of this note",
+      checkCallback: (checking: boolean) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md") return false;
+        if (checking) return true;
+        void this.trackSection(file);
+        return true;
+      },
+    });
+
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
         if (!(file instanceof TFile) || file.extension !== "md") return;
@@ -164,6 +177,16 @@ export default class SmartTodoPlugin extends Plugin {
             .setTitle(tracked ? "Smart ToDo: stop tracking tasks here" : "Smart ToDo: track tasks in this note")
             .setIcon(SPIRAL_ICON_ID)
             .onClick(() => void this.toggleTracked(file.path))
+        );
+        // Offered separately rather than as a sub-menu of the toggle: for a
+        // note that's several things at once — a board, a meeting with an
+        // attendee list — "one section" is the *right* answer, not an
+        // advanced variant of the wrong one.
+        menu.addItem((item) =>
+          item
+            .setTitle("Smart ToDo: track one section of this note…")
+            .setIcon(SPIRAL_ICON_ID)
+            .onClick(() => void this.trackSection(file))
         );
       })
     );
@@ -341,6 +364,58 @@ export default class SmartTodoPlugin extends Plugin {
         (caveats.length > 0 ? ` ${caveats.join("; ")}.` : ""),
       8000
     );
+  }
+
+  /**
+   * Narrow a note's tracking to one of its headings.
+   *
+   * Replaces whatever is already there for that file rather than adding
+   * alongside it — `kanban.md` and `kanban.md#Important` in the same list
+   * means the unrestricted entry wins and the narrowing silently does
+   * nothing, which is worse than refusing.
+   */
+  async trackSection(file: TFile): Promise<void> {
+    let content: string;
+    try {
+      content = await this.app.vault.read(file);
+    } catch (e) {
+      new Notice(`Smart ToDo: couldn't read ${file.name}.`, 4000);
+      return;
+    }
+
+    HeadingScopeModal.open(this.app, file.name, content, async (heading) => {
+      if (samePath(file.path, this.primaryFile) && heading) {
+        new Notice(
+          "Smart ToDo: this is the main task file — new tasks are appended to the end, " +
+            "so it can't be narrowed to one section.",
+          6000
+        );
+        return;
+      }
+      const withoutFile = removePathFromScope(
+        this.settings.managedFiles,
+        file.path,
+        this.scopeOptions
+      );
+      const entry = heading ? `${file.path}#${heading}` : file.path;
+      this.settings.managedFiles = addPathToScope(withoutFile, entry);
+      await this.saveSettings();
+      this.refreshViews();
+
+      const open = (await this.scan()).filter(
+        (t) => samePath(t.filePath, file.path) && t.status === "open"
+      );
+      new Notice(
+        heading
+          ? `Smart ToDo: tracking only “${heading}” in ${file.name} — ${open.length} open task${
+              open.length === 1 ? "" : "s"
+            }.`
+          : `Smart ToDo: tracking all of ${file.name} — ${open.length} open task${
+              open.length === 1 ? "" : "s"
+            }.`,
+        6000
+      );
+    });
   }
 
   /**

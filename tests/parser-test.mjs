@@ -36,9 +36,15 @@ writeFileSync(
    // The inline / menu subclasses EditorSuggest; only its pure line-rewriting
    // helpers are under test, so a hollow base class is enough to let it load.
    class EditorSuggest { constructor(app) { this.app = app; } }
+   // Section picking is a FuzzySuggestModal; only its pure headingsWithCounts
+   // helper is under test, so the base class just has to exist.
+   class FuzzySuggestModal {
+     constructor(app) { this.app = app; this.modalEl = { addClass() {} }; }
+     setPlaceholder() {} setInstructions() {} open() {}
+   }
    const setIcon = () => {};
    const addIcon = () => {};
-   module.exports = { Notice, TFile, Modal, EditorSuggest, setIcon, addIcon };\n`
+   module.exports = { Notice, TFile, Modal, EditorSuggest, FuzzySuggestModal, setIcon, addIcon };\n`
 );
 
 await esbuild.build({
@@ -51,6 +57,7 @@ await esbuild.build({
       export * as types from "./src/types";
       export * as categorize from "./src/categorize";
       export * as suggest from "./src/task-suggest";
+      export * as headingScope from "./src/heading-scope-modal";
     `,
     resolveDir: repo,
     loader: "ts",
@@ -1531,6 +1538,129 @@ check(
 );
 check("+2d", dstr(addDays(anchorFor(null, REF), 2)), "2026-11-27");
 check("+1m from the box", dstr(addMonths(anchorFor(new Date(2026, 11, 4), REF), 1)), "2027-01-04");
+
+// ======================================================================
+// 0.16.0 — tracking one section of a note, not the whole thing.
+//
+// The file this exists for is a Kanban board whose columns are headings:
+// 47 open checkboxes reach the panel and only 13 are work. The rest are
+// registers of companies and a column of annual goals.
+// ======================================================================
+
+const { splitHeadingSuffix, headingMatches, isTaskInScope } = mod.scope;
+const { headingsWithCounts } = mod.headingScope;
+
+console.log("\n[#Heading suffix splits off the path, and only after .md]");
+check("plain path keeps its heading null", splitHeadingSuffix("a/b.md").heading, null);
+check("suffix is read", splitHeadingSuffix("a/b.md#Important").heading, "Important");
+check("path half drops the suffix", splitHeadingSuffix("a/b.md#Important").path, "a/b.md");
+// A `#` that isn't after `.md` is part of the name. `C# notes.md` is a file.
+check("hash inside a filename survives", splitHeadingSuffix("notes/C# notes.md").path, "notes/C# notes.md");
+check("hash inside a filename isn't a heading", splitHeadingSuffix("notes/C# notes.md").heading, null);
+check("a bare trailing hash is not a heading", splitHeadingSuffix("a/b.md#").heading, null);
+check("headings may contain anything", splitHeadingSuffix("a/b.md#NewCo, threshold 🚀").heading, "NewCo, threshold 🚀");
+
+console.log("\n[heading match is a prefix, because the real column names are untypeable]");
+// John's actual column: "Important  .. or (urgent)". Requiring that verbatim
+// in a settings box is requiring a typo.
+check("prefix matches the real column", headingMatches("Important  .. or (urgent)", "Important"), true);
+check("case and spacing don't matter", headingMatches("IMPORTANT   ..  or (urgent)", "important .. or"), true);
+check("a different column doesn't match", headingMatches("Port co's / JB to track", "Important"), false);
+check("exact still matches", headingMatches("Goals 2026", "Goals 2026"), true);
+// A task above the first heading is in no section, so it's in no scoped section.
+check("no heading never matches a scoped entry", headingMatches(null, "Important"), false);
+check("an empty needle matches nothing", headingMatches("Important", ""), false);
+
+console.log("\n[a heading-scoped entry is a file for reading, a section for showing]");
+const kanban = [
+  "## Big Goals",
+  "- [ ] Raise Fund 4",
+  "## Important  .. or (urgent)",
+  "- [ ] Dataroom [important:: true]",
+  "- [ ] Kanban update for f4",
+  "## Goals 2026",
+  "- [ ] ### Work Goals:",
+  "\t* [ ] Fund 4 first close of 50M by EOY",
+  "## Port co's / JB to track",
+  "- [ ] Granola",
+  "- [ ] Neometric",
+  "## Archive",
+  "- [ ] something from March",
+].join("\n");
+const KPATH = "4. Meetings/kanban.md";
+const kTasks = parseTasksFromContent(kanban, KPATH);
+check("archive is still invisible", kTasks.some((t) => t.title.includes("March")), false);
+
+const narrow = parseScope(`${KPATH}#Important`);
+check("entry is a file, not a folder", narrow.entries[0].kind, "file");
+check("entry carries its heading", narrow.entries[0].heading, "Important");
+// The file still has to be *read* whole — headings and parent/child ancestry
+// are both established top to bottom.
+check("file-level scope still includes it", isInScope(KPATH, narrow), true);
+check(
+  "only the Important column reaches the panel",
+  filterTasksToScope(kTasks, narrow).map((t) => t.title).join(" | "),
+  "Dataroom | Kanban update for f4"
+);
+check(
+  "47 becomes 2 — the registers and goals are gone",
+  filterTasksToScope(kTasks, narrow).length,
+  2
+);
+
+console.log("\n[two sections of one file; and a whole-file entry wins]");
+const twoCols = parseScope(`${KPATH}#Important\n${KPATH}#Big Goals`);
+check("both entries survive dedupe", twoCols.entries.length, 2);
+check("union of the two columns", filterTasksToScope(kTasks, twoCols).length, 3);
+// Adding the plain path back must *widen*, never be silently out-voted by the
+// narrow entry sitting above it — otherwise "track this note" appears broken.
+const openedUp = parseScope(`${KPATH}#Important\n${KPATH}`);
+check("an unrestricted entry opens the whole file", filterTasksToScope(kTasks, openedUp).length, 7);
+
+console.log("\n[a scoped file is never the capture target]");
+// A task appended to the end of this file lands under Archive — written,
+// parsed, then dropped. That's the invisible-task bug, re-armed.
+check(
+  "primary skips the heading-scoped file",
+  primaryManagedFile(parseScope(`${KPATH}#Important\nTasks.md`)),
+  "Tasks.md"
+);
+check(
+  "and falls back rather than picking a scoped one",
+  primaryManagedFile(parseScope(`${KPATH}#Important`)),
+  "Tasks.md"
+);
+
+console.log("\n[track/untrack compare base paths, so narrowing survives a right-click]");
+const RAW = `Tasks.md\n${KPATH}#Important`;
+check("a narrowed note reads as tracked", mod.scope.scopeIncludesPath(RAW, KPATH), true);
+// Without this, right-click → Track would append the bare path and undo it.
+check("so Track is a no-op on it", mod.scope.addPathToScope(RAW, KPATH), RAW);
+check(
+  "untrack drops the section entry too",
+  mod.scope.removePathFromScope(RAW, KPATH),
+  "Tasks.md"
+);
+
+console.log("\n[the section picker lists headings with their open counts]");
+const choices = headingsWithCounts(kanban);
+check("whole note comes first", choices[0].heading, null);
+check("whole note counts every open line the panel would see", choices[0].open, 7);
+// Archive is omitted: the parser can't see under it, so offering it as a
+// choice would be offering a section guaranteed to show nothing.
+check("every heading but Archive is listed", choices.length, 5);
+check("Archive is not offered", choices.some((c) => c.heading === "Archive"), false);
+check("Important's count", choices.find((c) => (c.heading ?? "").startsWith("Important")).open, 2);
+check("Port co's count", choices.find((c) => (c.heading ?? "").startsWith("Port")).open, 2);
+// Listed even though it has none: a 0 is visible feedback, a missing row is
+// the picker looking broken.
+check("Goals 2026 nests, and both levels count", choices.find((c) => c.heading === "Goals 2026").open, 2);
+// The week page ends in a ```base block whose contents look like task lines.
+check(
+  "fenced blocks don't inflate the counts",
+  headingsWithCounts("## A\n- [ ] real\n```base\n- [ ] not real\n```").find((c) => c.heading === "A").open,
+  1
+);
 
 console.log(
   `\n${failures === 0 ? "ALL ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}\n`

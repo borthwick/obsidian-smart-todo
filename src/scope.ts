@@ -131,13 +131,61 @@ function splitScopeEntries(raw: string | undefined | null): string[] {
   return (raw ?? "").split(/\n/).map(normalizePath).filter((p) => p.length > 0);
 }
 
+// --- Heading-scoped entries ----------------------------------------------
+//
+// `4. Meetings/kanban.md#Important` tracks one section of a note instead of
+// the whole thing. The motivating file is John's Betaworks Kanban: 47 open
+// checkboxes reach the panel and only 13 are work — the rest are columns of
+// portfolio companies, new companies and 2026 goals, which are registers and
+// targets, not tasks. A Kanban column *is* a markdown heading, so heading is
+// exactly the right grain, and the same applies to any meeting note that
+// carries both an agenda and a list of attendees.
+
+/**
+ * Split a `path.md#Heading` entry into its two halves.
+ *
+ * Only splits on a `#` that follows `.md`, so a note genuinely named
+ * `C# notes.md` is untouched and a folder entry can't accidentally acquire a
+ * heading. The heading half is kept verbatim apart from trimming — it's
+ * matched loosely later, so there's nothing to normalize here.
+ */
+export function splitHeadingSuffix(entry: string): { path: string; heading: string | null } {
+  const m = /^(.*\.md)#(.+)$/i.exec(entry);
+  if (!m) return { path: entry, heading: null };
+  const heading = m[2].trim();
+  return heading ? { path: m[1], heading } : { path: m[1], heading: null };
+}
+
+/** Lowercase and collapse runs of whitespace, for loose heading comparison. */
+function normalizeHeading(h: string): string {
+  return h.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Does a task's heading satisfy a scope entry's heading filter?
+ *
+ * **Prefix match, not exact.** John's column is literally
+ * `Important  .. or (urgent)`; requiring that to be retyped into a settings
+ * box is requiring a typo. `#Important` matching it is the humane reading,
+ * and headings within one note are distinct enough that a prefix doesn't
+ * collide in practice. A task with no heading at all (above the first one)
+ * never matches a heading-scoped entry — it isn't in that section.
+ */
+export function headingMatches(taskHeading: string | null | undefined, needle: string): boolean {
+  if (!taskHeading) return false;
+  const h = normalizeHeading(taskHeading);
+  const n = normalizeHeading(needle);
+  return n.length > 0 && (h === n || h.startsWith(n));
+}
+
 /**
  * Parse the `managedFiles` setting into scope entries.
  *
  * One entry per line. An entry ending in `.md` is an exact file; everything
- * else is treated as a folder and matched recursively. A blank setting falls
- * back to the default file rather than the whole vault — opening up to 3,000
- * stray checkboxes should never be the accidental state.
+ * else is treated as a folder and matched recursively. A `#Heading` suffix on
+ * a file narrows it to that section. A blank setting falls back to the default
+ * file rather than the whole vault — opening up to 3,000 stray checkboxes
+ * should never be the accidental state.
  */
 export function parseScope(
   raw: string | undefined | null,
@@ -152,13 +200,17 @@ export function parseScope(
 
   const seen = new Set<string>();
   const entries: ScopeEntry[] = [];
-  for (const path of parts) {
-    const key = path.toLowerCase();
+  for (const raw2 of parts) {
+    const key = raw2.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
+    // Split the heading off before deciding file vs folder, or `notes.md#X`
+    // fails the `.md$` test and gets scanned as a folder that doesn't exist.
+    const { path, heading } = splitHeadingSuffix(raw2);
     entries.push({
       kind: /\.md$/i.test(path) ? "file" : "folder",
       path,
+      heading: /\.md$/i.test(path) ? heading : null,
     });
   }
 
@@ -191,9 +243,33 @@ export function isInScope(path: string, scope: ManagedScope): boolean {
   return false;
 }
 
+/**
+ * Is this *task* in scope — file and, where the entry names one, heading?
+ *
+ * `isInScope` answers "should I read this file", which is still a whole-file
+ * question even when only one section is tracked. This answers "should this
+ * line reach the panel". An unrestricted entry for the file wins over a
+ * heading-scoped one, so adding `notes.md` alongside `notes.md#Agenda` opens
+ * the whole note rather than quietly keeping it narrow.
+ */
+export function isTaskInScope(
+  task: { filePath: string; heading?: string | null },
+  scope: ManagedScope
+): boolean {
+  const p = normalizePath(task.filePath).toLowerCase();
+  for (const entry of scope.entries) {
+    const e = entry.path.toLowerCase();
+    const fileMatches = entry.kind === "file" ? p === e : p.startsWith(`${e}/`);
+    if (!fileMatches) continue;
+    if (!entry.heading) return true; // whole file (or folder) is tracked
+    if (headingMatches(task.heading, entry.heading)) return true;
+  }
+  return false;
+}
+
 /** Filter an already-parsed task list down to the managed scope. */
 export function filterTasksToScope(tasks: SmartTask[], scope: ManagedScope): SmartTask[] {
-  return tasks.filter((t) => isInScope(t.filePath, scope));
+  return tasks.filter((t) => isTaskInScope(t, scope));
 }
 
 /**
@@ -202,9 +278,14 @@ export function filterTasksToScope(tasks: SmartTask[], scope: ManagedScope): Sma
  * First explicit file entry wins. If the scope is folders only, we anchor a
  * `Tasks.md` inside the first folder — that keeps "add task" working without
  * forcing the user to also name a file.
+ *
+ * **Heading-scoped files are skipped.** A capture appended to the end of a
+ * note tracked only as `notes.md#Agenda` lands outside the tracked section,
+ * so it would be written, parsed, and then dropped by the scope filter —
+ * which is precisely the invisible-task failure 0.15.0 exists to kill.
  */
 export function primaryManagedFile(scope: ManagedScope): string {
-  const file = scope.entries.find((e) => e.kind === "file");
+  const file = scope.entries.find((e) => e.kind === "file" && !e.heading);
   if (file) return file.path;
   const folder = scope.entries.find((e) => e.kind === "folder");
   if (folder) return `${folder.path}/${DEFAULT_MANAGED_FILE}`;
@@ -242,12 +323,17 @@ export function scopeIncludesPath(
   options: { today?: Date; weekStart?: "sunday" | "monday" } = {}
 ): boolean {
   const { today = new Date(), weekStart = "sunday" } = options;
-  const needle = normalizePath(path).toLowerCase();
-  return rawEntries(raw).some(
-    (p) =>
-      p.toLowerCase() === needle ||
-      expandPathTokens(p, today, weekStart).toLowerCase() === needle
-  );
+  const needle = splitHeadingSuffix(normalizePath(path)).path.toLowerCase();
+  return rawEntries(raw).some((p) => {
+    // Compare file paths with any `#Heading` stripped from both sides. A note
+    // tracked as `kanban.md#Important` *is* tracked — answering no would let
+    // right-click → Track append the whole file and undo the narrowing.
+    const base = splitHeadingSuffix(p).path;
+    return (
+      base.toLowerCase() === needle ||
+      splitHeadingSuffix(expandPathTokens(p, today, weekStart)).path.toLowerCase() === needle
+    );
+  });
 }
 
 /**
@@ -276,11 +362,13 @@ export function removePathFromScope(
   options: { today?: Date; weekStart?: "sunday" | "monday" } = {}
 ): string {
   const { today = new Date(), weekStart = "sunday" } = options;
-  const needle = normalizePath(path).toLowerCase();
+  const needle = splitHeadingSuffix(normalizePath(path)).path.toLowerCase();
+  // Drops every entry for the file, heading-scoped ones included: "stop
+  // tracking this note" means the note, not one of its sections.
   const kept = rawEntries(raw).filter(
     (p) =>
-      p.toLowerCase() !== needle &&
-      expandPathTokens(p, today, weekStart).toLowerCase() !== needle
+      splitHeadingSuffix(p).path.toLowerCase() !== needle &&
+      splitHeadingSuffix(expandPathTokens(p, today, weekStart)).path.toLowerCase() !== needle
   );
   return kept.join("\n");
 }
@@ -355,6 +443,9 @@ export function splitLegacyCommaList(
 /** Human-readable scope summary for the settings tab and the empty state. */
 export function describeScope(scope: ManagedScope): string {
   return scope.entries
-    .map((e) => (e.kind === "folder" ? `${e.path}/ (folder)` : e.path))
+    .map((e) => {
+      if (e.kind === "folder") return `${e.path}/ (folder)`;
+      return e.heading ? `${e.path} › ${e.heading}` : e.path;
+    })
     .join(", ");
 }

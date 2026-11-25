@@ -1,7 +1,7 @@
 {
   "name": "smart-todo",
-  "version": "0.15.2",
-  "description": "Effort-aware task triage for Obsidian \u2014 Today view over Tasks-plugin markdown checkboxes",
+  "version": "0.16.0",
+  "description": "Effort-aware task triage for Obsidian — Today view over Tasks-plugin markdown checkboxes",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
