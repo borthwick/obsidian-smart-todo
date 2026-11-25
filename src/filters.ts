@@ -33,9 +33,31 @@ export interface Buckets {
   restingCount: number;
 }
 
+/**
+ * How far out a defer date has to be before the task leaves the main list.
+ *
+ * Inside a week, a deferred task is still this week's problem and belongs in
+ * view — "push to Thursday" must not mean "disappear". Past a week it's parked,
+ * and parked work sitting in the main list is noise you re-skip on every pass.
+ */
+export const DEFER_HORIZON_DAYS = 7;
+
 /** A task is "resting" while its defer date is still ahead of today. */
 export function isResting(task: SmartTask, today = startOfToday()): boolean {
   return !!task.defer && task.defer.getTime() > today.getTime();
+}
+
+/**
+ * Parked: deferred more than `DEFER_HORIZON_DAYS` out.
+ *
+ * Hidden from every view except Deferred (and Done, which is about status, not
+ * timing). The rule has to be statable in one sentence or it reads as the panel
+ * losing tasks — which is exactly how the old behaviour felt when a note
+ * deferred to January showed up next to today's work.
+ */
+export function isParked(task: SmartTask, today = startOfToday()): boolean {
+  if (!task.defer) return false;
+  return task.defer.getTime() > addDays(today, DEFER_HORIZON_DAYS).getTime();
 }
 
 export function isOverdue(task: SmartTask, today = startOfToday()): boolean {
@@ -163,7 +185,8 @@ export function formatDuration(minutes: number): string {
  *
  * `today` keeps the old Today semantics (due today or earlier, not resting).
  * `all` is every open task including undated ones — the thing the old tab set
- * could only reach by visiting Backlog *and* Today and adding them up.
+ * could only reach by visiting Backlog *and* Today and adding them up — minus
+ * the ones parked more than a week out, which live under `deferred`.
  */
 export function matchesHorizon(
   task: SmartTask,
@@ -184,8 +207,12 @@ export function matchesHorizon(
       if (task.defer && task.defer.getTime() > end.getTime()) return false;
       return !!task.due && task.due.getTime() <= end.getTime();
     }
+    case "deferred":
+      return isResting(task, today);
     default:
-      return true;
+      // "All" is all the work in play. Parked tasks are reachable in one click
+      // from the Deferred item in the same menu.
+      return !isParked(task, today);
   }
 }
 
@@ -247,9 +274,16 @@ export function selectTasks(
     });
   }
 
-  return query.horizon === "done"
-    ? out.sort(compareCompleted)
-    : out.sort((a, b) => compareForToday(a, b, today));
+  if (query.horizon === "done") return out.sort(compareCompleted);
+  // Deferred is a list of return dates, so order by the date that put each
+  // task there — soonest back first. Sorting it by due date would bury the
+  // thing coming back on Monday under something parked until March.
+  if (query.horizon === "deferred") {
+    return out.sort(
+      (a, b) => (a.defer?.getTime() ?? 0) - (b.defer?.getTime() ?? 0)
+    );
+  }
+  return out.sort((a, b) => compareForToday(a, b, today));
 }
 
 export interface SourceGroup {

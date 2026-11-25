@@ -79,6 +79,11 @@ var HORIZONS = [
   { id: "today", label: "Today" },
   { id: "week", label: "This week" },
   { id: "all", label: "All" },
+  // "All" means all the work in play, not every line in the vault: a task
+  // deferred past DEFER_HORIZON_DAYS is parked, and parked work in the main
+  // list is noise you have to re-skip every time you look. Deferred is where
+  // it goes, and it's one menu item away rather than a setting.
+  { id: "deferred", label: "Deferred" },
   { id: "done", label: "Done" }
 ];
 var QUADRANTS = [
@@ -249,9 +254,12 @@ function samePath(a, b) {
   const right = normalizePath(b).toLowerCase();
   return left.length > 0 && left === right;
 }
+function splitScopeEntries(raw) {
+  return (raw != null ? raw : "").split(/\n/).map(normalizePath).filter((p) => p.length > 0);
+}
 function parseScope(raw, options = {}) {
   const { today = new Date(), weekStart = "sunday", expandTokens = true } = options;
-  const parts = (raw != null ? raw : "").split(/[,\n]/).map(normalizePath).map((p) => expandTokens ? expandPathTokens(p, today, weekStart) : p).filter((p) => p.length > 0 && !p.includes("{{"));
+  const parts = splitScopeEntries(raw).map((p) => expandTokens ? expandPathTokens(p, today, weekStart) : p).filter((p) => p.length > 0 && !p.includes("{{"));
   const seen = /* @__PURE__ */ new Set();
   const entries = [];
   for (const path of parts) {
@@ -295,7 +303,7 @@ function primaryManagedFile(scope) {
   return DEFAULT_MANAGED_FILE;
 }
 function rawEntries(raw) {
-  return (raw != null ? raw : "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
+  return splitScopeEntries(raw);
 }
 function scopeIncludesPath(raw, path, options = {}) {
   const { today = new Date(), weekStart = "sunday" } = options;
@@ -311,8 +319,8 @@ function addPathToScope(raw, path) {
   const existing = (raw != null ? raw : "").trim();
   if (!existing)
     return clean;
-  return existing.includes("\n") ? `${existing}
-${clean}` : `${existing}, ${clean}`;
+  return `${existing}
+${clean}`;
 }
 function removePathFromScope(raw, path, options = {}) {
   const { today = new Date(), weekStart = "sunday" } = options;
@@ -320,7 +328,45 @@ function removePathFromScope(raw, path, options = {}) {
   const kept = rawEntries(raw).filter(
     (p) => p.toLowerCase() !== needle && expandPathTokens(p, today, weekStart).toLowerCase() !== needle
   );
-  return (raw != null ? raw : "").includes("\n") ? kept.join("\n") : kept.join(", ");
+  return kept.join("\n");
+}
+function splitLegacyCommaList(raw, exists) {
+  const value = raw != null ? raw : "";
+  if (!value.includes(","))
+    return null;
+  const out = [];
+  for (const line of value.split(/\n/)) {
+    const tokens = line.split(",");
+    let i = 0;
+    while (i < tokens.length) {
+      let taken = 0;
+      for (let end = tokens.length; end > i + 1; end--) {
+        const candidate = normalizePath(tokens.slice(i, end).join(","));
+        if (candidate && exists(candidate)) {
+          out.push(candidate);
+          taken = end - i;
+          break;
+        }
+      }
+      if (taken === 0) {
+        const single = normalizePath(tokens[i]);
+        if (single)
+          out.push(single);
+        taken = 1;
+      }
+      i += taken;
+    }
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const deduped = out.filter((p) => {
+    const key = p.toLowerCase();
+    if (seen.has(key))
+      return false;
+    seen.add(key);
+    return true;
+  });
+  const migrated = deduped.join("\n");
+  return migrated === value ? null : migrated;
 }
 function describeScope(scope) {
   return scope.entries.map((e) => e.kind === "folder" ? `${e.path}/ (folder)` : e.path).join(", ");
@@ -877,7 +923,7 @@ var SmartTodoSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
     };
     new import_obsidian2.Setting(el).setName("Managed files").setDesc(
-      `Comma-separated. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}, Projects/Tasks". To add a project note, right-click it and choose "Smart ToDo: track tasks in this note" instead of typing it here.`
+      `One path per line \u2014 commas are part of a filename, not separators. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}" then "Projects/Tasks". To add a project note, right-click it and choose "Smart ToDo: track tasks in this note" instead of typing it here.`
     ).addTextArea((text) => {
       text.setPlaceholder(DEFAULT_MANAGED_FILE).setValue(this.plugin.settings.managedFiles).onChange(async (value) => {
         this.plugin.settings.managedFiles = value;
@@ -921,8 +967,10 @@ var SmartTodoSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
       new import_obsidian2.Setting(inboxWarning).setName("Add the inbox to managed files").addButton(
         (btn) => btn.setButtonText("Add to scope").onClick(async () => {
-          const current = this.plugin.settings.managedFiles.trim();
-          this.plugin.settings.managedFiles = current ? `${current}, ${path}` : path;
+          this.plugin.settings.managedFiles = addPathToScope(
+            this.plugin.settings.managedFiles,
+            path
+          );
           await this.plugin.saveSettings();
           this.plugin.refreshViews();
           this.display();
@@ -1802,8 +1850,14 @@ var import_obsidian9 = require("obsidian");
 
 // src/filters.ts
 var URGENT_WINDOW_DAYS = 2;
+var DEFER_HORIZON_DAYS = 7;
 function isResting(task, today = startOfToday()) {
   return !!task.defer && task.defer.getTime() > today.getTime();
+}
+function isParked(task, today = startOfToday()) {
+  if (!task.defer)
+    return false;
+  return task.defer.getTime() > addDays(today, DEFER_HORIZON_DAYS).getTime();
 }
 function isOverdue(task, today = startOfToday()) {
   return task.status === "open" && !!task.due && task.due.getTime() < today.getTime();
@@ -1866,8 +1920,10 @@ function matchesHorizon(task, horizon, today = startOfToday()) {
         return false;
       return !!task.due && task.due.getTime() <= end.getTime();
     }
+    case "deferred":
+      return isResting(task, today);
     default:
-      return true;
+      return !isParked(task, today);
   }
 }
 function matchesSearch(tasks, search) {
@@ -1899,7 +1955,17 @@ function selectTasks(tasks, query, today = startOfToday()) {
       return a.status === "open" ? compareForToday(a, b, today) : compareCompleted(a, b);
     });
   }
-  return query.horizon === "done" ? out.sort(compareCompleted) : out.sort((a, b) => compareForToday(a, b, today));
+  if (query.horizon === "done")
+    return out.sort(compareCompleted);
+  if (query.horizon === "deferred") {
+    return out.sort(
+      (a, b) => {
+        var _a2, _b, _c, _d;
+        return ((_b = (_a2 = a.defer) == null ? void 0 : _a2.getTime()) != null ? _b : 0) - ((_d = (_c = b.defer) == null ? void 0 : _c.getTime()) != null ? _d : 0);
+      }
+    );
+  }
+  return out.sort((a, b) => compareForToday(a, b, today));
 }
 function groupByHeading(tasks) {
   var _a2, _b;
@@ -2775,20 +2841,36 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       cls: "stw-search-input",
       attr: { type: "text", placeholder: "work, quick, do first\u2026" }
     });
+    const clear = wrap.createSpan({ cls: "stw-search-clear" });
+    (0, import_obsidian9.setIcon)(clear, "x");
+    clear.setAttribute("aria-label", "Clear search");
+    const syncClear = () => clear.toggleClass("is-visible", this.search.length > 0);
     this.searchInputEl.addEventListener("input", () => {
       this.search = this.searchInputEl.value;
       this.searchEverywhere = false;
+      syncClear();
       this.renderFilters();
       this.render();
     });
+    const clearSearch = (refocus) => {
+      this.searchInputEl.value = "";
+      this.search = "";
+      this.searchEverywhere = false;
+      syncClear();
+      if (refocus)
+        this.searchInputEl.focus();
+      else
+        this.searchInputEl.blur();
+      this.renderFilters();
+      this.render();
+    };
+    clear.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      clearSearch(true);
+    });
     this.searchInputEl.addEventListener("keydown", (evt) => {
       if (evt.key === "Escape") {
-        this.searchInputEl.value = "";
-        this.search = "";
-        this.searchEverywhere = false;
-        this.searchInputEl.blur();
-        this.renderFilters();
-        this.render();
+        clearSearch(false);
       } else if (evt.key === "Enter") {
         evt.preventDefault();
         void this.captureFromSearch();
@@ -2799,6 +2881,8 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     });
     const kbd = wrap.createSpan({ cls: "stw-kbd", text: "\u2318K" });
     kbd.addEventListener("click", () => this.openPalette());
+    this.searchInputEl.value = this.search;
+    syncClear();
   }
   focusCapture() {
     this.searchInputEl.focus();
@@ -2894,6 +2978,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
         this.render();
       });
     }
+    row.createDiv({ cls: "stw-row-divider" });
     const when = row.createEl("button", { cls: "stw-when" });
     (0, import_obsidian9.setTooltip)(when, "When", { placement: "bottom" });
     when.createSpan({
@@ -3047,8 +3132,10 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       } else {
         this.renderEmpty();
       }
-      if (!this.search.trim())
+      if (!this.search.trim()) {
         this.renderUndatedHint();
+        this.renderParkedHint();
+      }
       return;
     }
     if (this.searchEverywhere)
@@ -3059,8 +3146,10 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       this.renderSweep(tasks, today);
     else
       this.renderFocus(tasks, today);
-    if (!this.searchEverywhere)
+    if (!this.searchEverywhere) {
       this.renderUndatedHint();
+      this.renderParkedHint();
+    }
     this.renderSearchElsewhereHint(tasks);
   }
   /** Banner for unfiltered search: the chips above are not in force. */
@@ -3149,6 +3238,33 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     const btn = hint.createEl("button", { cls: "stw-undated-btn", text: "Show all" });
     btn.addEventListener("click", () => {
       this.horizon = "all";
+      this.renderFilters();
+      void this.refresh();
+    });
+  }
+  /**
+   * Say how many tasks are parked, and offer the one click to them.
+   *
+   * All now excludes anything deferred more than a week out. That's the right
+   * default — a task that comes back in January is not today's list — but a
+   * filter that silently removes work is indistinguishable from a bug, which
+   * is the exact complaint this release is fixing. So: state the count.
+   */
+  renderParkedHint() {
+    if (this.horizon !== "all")
+      return;
+    const parked = this.listTasks.filter(
+      (t) => t.status === "open" && isParked(t) && matchesCategory(t, this.category) && fitsBudget(t, this.budget)
+    ).length;
+    if (parked === 0)
+      return;
+    const hint = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    hint.createSpan({
+      text: `${parked} task${parked === 1 ? "" : "s"} deferred more than a week out.`
+    });
+    const btn = hint.createEl("button", { cls: "stw-undated-btn", text: "Show deferred" });
+    btn.addEventListener("click", () => {
+      this.horizon = "deferred";
       this.renderFilters();
       void this.refresh();
     });
@@ -4156,6 +4272,7 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
       }
     });
     this.app.workspace.onLayoutReady(() => {
+      void this.migrateLegacyScopeList();
       void this.ensurePrimaryFile();
     });
     this.registerEvent(
@@ -4181,6 +4298,25 @@ var SmartTodoPlugin = class extends import_obsidian11.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+  /**
+   * Rewrite a comma-separated tracked-files list as one path per line.
+   *
+   * Runs after layout-ready because the migration asks the vault which
+   * reading of `a, b` is a real file — mid-load, `getAbstractFileByPath`
+   * answers no for everything and we'd shred a comma-bearing filename into
+   * two paths that don't exist, which is the original bug with extra steps.
+   */
+  async migrateLegacyScopeList() {
+    const migrated = splitLegacyCommaList(
+      this.settings.managedFiles,
+      (path) => this.app.vault.getAbstractFileByPath(path) instanceof import_obsidian11.TFile
+    );
+    if (migrated === null)
+      return;
+    this.settings.managedFiles = migrated;
+    await this.saveSettings();
+    this.scheduleRefresh();
   }
   async saveSettings() {
     await this.saveData(this.settings);

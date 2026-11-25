@@ -18,6 +18,7 @@ import {
   removePathFromScope,
   samePath,
   scopeIncludesPath,
+  splitLegacyCommaList,
 } from "./scope";
 import { SmartTodoSettingTab } from "./settings";
 import { AddTaskModal } from "./add-task-modal";
@@ -192,6 +193,7 @@ export default class SmartTodoPlugin extends Plugin {
     // Create the managed file after the vault has finished indexing —
     // getAbstractFileByPath is unreliable mid-load and we'd create a duplicate.
     this.app.workspace.onLayoutReady(() => {
+      void this.migrateLegacyScopeList();
       void this.ensurePrimaryFile();
     });
 
@@ -222,6 +224,24 @@ export default class SmartTodoPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  /**
+   * Rewrite a comma-separated tracked-files list as one path per line.
+   *
+   * Runs after layout-ready because the migration asks the vault which
+   * reading of `a, b` is a real file — mid-load, `getAbstractFileByPath`
+   * answers no for everything and we'd shred a comma-bearing filename into
+   * two paths that don't exist, which is the original bug with extra steps.
+   */
+  private async migrateLegacyScopeList(): Promise<void> {
+    const migrated = splitLegacyCommaList(this.settings.managedFiles, (path) =>
+      this.app.vault.getAbstractFileByPath(path) instanceof TFile
+    );
+    if (migrated === null) return;
+    this.settings.managedFiles = migrated;
+    await this.saveSettings();
+    this.scheduleRefresh();
   }
 
   async saveSettings(): Promise<void> {

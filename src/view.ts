@@ -30,6 +30,7 @@ import {
   groupBySource,
   groupByQuadrant,
   isContainer,
+  isParked,
   isResting,
   isUnjudged,
   matchesCategory,
@@ -217,22 +218,45 @@ export class SmartTodoView extends ItemView {
       attr: { type: "text", placeholder: "work, quick, do first…" },
     }) as HTMLInputElement;
 
+    // Clear button, between the input and the ⌘K hint. Escape already does
+    // this, but only if the box has focus and only if you know — and the
+    // keyboard isn't where you are when you've just read the result.
+    const clear = wrap.createSpan({ cls: "stw-search-clear" });
+    setIcon(clear, "x");
+    clear.setAttribute("aria-label", "Clear search");
+    const syncClear = () => clear.toggleClass("is-visible", this.search.length > 0);
+
     this.searchInputEl.addEventListener("input", () => {
       this.search = this.searchInputEl.value;
       // A new search starts scoped again. Carrying "everywhere" over to the
       // next word would silently disable the chips for the rest of the session.
       this.searchEverywhere = false;
+      syncClear();
       this.renderFilters();
       this.render();
     });
+
+    const clearSearch = (refocus: boolean) => {
+      this.searchInputEl.value = "";
+      this.search = "";
+      this.searchEverywhere = false;
+      syncClear();
+      if (refocus) this.searchInputEl.focus();
+      else this.searchInputEl.blur();
+      this.renderFilters();
+      this.render();
+    };
+
+    // Clearing leaves the caret in the box: clicking X nearly always means
+    // "wrong search, try again", not "done searching".
+    clear.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      clearSearch(true);
+    });
+
     this.searchInputEl.addEventListener("keydown", (evt) => {
       if (evt.key === "Escape") {
-        this.searchInputEl.value = "";
-        this.search = "";
-        this.searchEverywhere = false;
-        this.searchInputEl.blur();
-        this.renderFilters();
-        this.render();
+        clearSearch(false);
       } else if (evt.key === "Enter") {
         // Enter on a non-empty box with no matches is the capture path: the
         // fastest way to add a task is to look for it, not find it, and type.
@@ -246,6 +270,11 @@ export class SmartTodoView extends ItemView {
 
     const kbd = wrap.createSpan({ cls: "stw-kbd", text: "⌘K" });
     kbd.addEventListener("click", () => this.openPalette());
+
+    // The box survives re-renders with text in it (palette search, capture),
+    // so set the initial state from `this.search` rather than assuming empty.
+    this.searchInputEl.value = this.search;
+    syncClear();
   }
 
   private focusCapture(): void {
@@ -350,6 +379,11 @@ export class SmartTodoView extends ItemView {
         this.render();
       });
     }
+
+    // Hairline before the trailing control, the way the iOS segmented control
+    // separates its view toggles from the thing that isn't one. Does the job
+    // the old gap was doing, in less width.
+    row.createDiv({ cls: "stw-row-divider" });
 
     // "When" — the seven old tabs, collapsed into one menu. Deliberately not a
     // pill: the pills to its left are toggles that commit on click, this one
@@ -538,7 +572,10 @@ export class SmartTodoView extends ItemView {
       // The empty state explains a *search* itself, in terms of the term you
       // typed. Everything else still needs the filter hint, which used to be
       // skipped here — the one place a dead-end list most needed a reason.
-      if (!this.search.trim()) this.renderUndatedHint();
+      if (!this.search.trim()) {
+        this.renderUndatedHint();
+        this.renderParkedHint();
+      }
       return;
     }
 
@@ -548,7 +585,10 @@ export class SmartTodoView extends ItemView {
     else if (this.mode === "sweep") this.renderSweep(tasks, today);
     else this.renderFocus(tasks, today);
 
-    if (!this.searchEverywhere) this.renderUndatedHint();
+    if (!this.searchEverywhere) {
+      this.renderUndatedHint();
+      this.renderParkedHint();
+    }
     this.renderSearchElsewhereHint(tasks);
   }
 
@@ -650,6 +690,38 @@ export class SmartTodoView extends ItemView {
     btn.addEventListener("click", () => {
       this.horizon = "all";
       // Repaint the When button too, or it keeps claiming "Today".
+      this.renderFilters();
+      void this.refresh();
+    });
+  }
+
+  /**
+   * Say how many tasks are parked, and offer the one click to them.
+   *
+   * All now excludes anything deferred more than a week out. That's the right
+   * default — a task that comes back in January is not today's list — but a
+   * filter that silently removes work is indistinguishable from a bug, which
+   * is the exact complaint this release is fixing. So: state the count.
+   */
+  private renderParkedHint(): void {
+    if (this.horizon !== "all") return;
+
+    const parked = this.listTasks.filter(
+      (t) =>
+        t.status === "open" &&
+        isParked(t) &&
+        matchesCategory(t, this.category) &&
+        fitsBudget(t, this.budget)
+    ).length;
+    if (parked === 0) return;
+
+    const hint = this.bodyEl.createDiv({ cls: "stw-undated-hint" });
+    hint.createSpan({
+      text: `${parked} task${parked === 1 ? "" : "s"} deferred more than a week out.`,
+    });
+    const btn = hint.createEl("button", { cls: "stw-undated-btn", text: "Show deferred" });
+    btn.addEventListener("click", () => {
+      this.horizon = "deferred";
       this.renderFilters();
       void this.refresh();
     });

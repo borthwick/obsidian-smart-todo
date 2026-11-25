@@ -337,15 +337,15 @@ check(
 );
 
 console.log("\n[mixed + multi-entry scope]");
-const mixed = parseScope("Tasks.md, 2. Day Planners");
+const mixed = parseScope("Tasks.md\n2. Day Planners");
 check("two entries parsed", mixed.entries.length, 2);
 check("both files in scope → all tasks", filterTasksToScope(bothFiles, mixed).length, bothFiles.length);
 
 console.log("\n[input normalization]");
 check("leading/trailing slashes stripped", parseScope("/Tasks.md/").entries[0].path, "Tasks.md");
-check("whitespace + empty entries dropped", parseScope("  Tasks.md ,, ").entries.length, 1);
+check("whitespace + empty entries dropped", parseScope("  Tasks.md \n\n ").entries.length, 1);
 check("newline-separated entries accepted", parseScope("Tasks.md\nProjects").entries.length, 2);
-check("duplicates collapsed", parseScope("Tasks.md, tasks.md").entries.length, 1);
+check("duplicates collapsed", parseScope("Tasks.md\ntasks.md").entries.length, 1);
 check("case-insensitive match", isInScope("tasks.md", parseScope("Tasks.md")), true);
 check("quoted path unquoted", parseScope('"Tasks.md"').entries[0].path, "Tasks.md");
 
@@ -357,10 +357,10 @@ check("fallback still excludes other files", isInScope("Some/Other.md", blank), 
 check("undefined setting handled", parseScope(undefined).entries[0].path, "Tasks.md");
 
 console.log("\n[primary managed file — the add-task target]");
-check("first file entry wins", primaryManagedFile(parseScope("Tasks.md, Projects")), "Tasks.md");
+check("first file entry wins", primaryManagedFile(parseScope("Tasks.md\nProjects")), "Tasks.md");
 check(
   "file entry wins even when listed second",
-  primaryManagedFile(parseScope("Projects, Inbox.md")),
+  primaryManagedFile(parseScope("Projects\nInbox.md")),
   "Inbox.md"
 );
 check(
@@ -723,12 +723,12 @@ check("an ordinary done line has no dropped date", parseTasksFromContent("- [x] 
 const TRACKER = "3. Evergreen & fleeting Notes/Task tracker.md";
 const INBOX = "3. Evergreen & fleeting Notes/Task inbox.md";
 const TURKEY = "4. Projects/Turkey Fry Prep — Thanksgiving 2026 🦃.md";
-const commaScope = `${TRACKER}, ${INBOX}`;
+const lineScope = `${TRACKER}\n${INBOX}`;
 
 console.log("\n[addPathToScope — append, never displace the capture target]");
-const widened = addPathToScope(commaScope, TURKEY);
+const widened = addPathToScope(lineScope, TURKEY);
 check("note added", scopeIncludesPath(widened, TURKEY), true);
-check("comma format kept", widened, `${commaScope}, ${TURKEY}`);
+check("one path per line", widened, `${lineScope}\n${TURKEY}`);
 check("tracker is still first, so capture still lands there", parseScope(widened).entries[0].path, TRACKER);
 check("three entries", parseScope(widened).entries.length, 3);
 check("still a file entry, not a folder", parseScope(widened).entries[2].kind, "file");
@@ -736,22 +736,90 @@ check("adding twice is a no-op", addPathToScope(widened, TURKEY), widened);
 check("case-insensitive, so no near-duplicate", addPathToScope(widened, TURKEY.toUpperCase()), widened);
 check("blank scope → just the path", addPathToScope("", TURKEY), TURKEY);
 check("blank scope, undefined setting", addPathToScope(undefined, TURKEY), TURKEY);
-check("a line-per-entry list stays lines", addPathToScope(`${TRACKER}\n${INBOX}`, TURKEY), `${TRACKER}\n${INBOX}\n${TURKEY}`);
-check("empty path is rejected", addPathToScope(commaScope, "   "), commaScope);
+check("empty path is rejected", addPathToScope(lineScope, "   "), lineScope);
 
 console.log("\n[removePathFromScope — stop scanning, touch nothing else]");
 check("note gone", scopeIncludesPath(removePathFromScope(widened, TURKEY), TURKEY), false);
-check("the others survive verbatim", removePathFromScope(widened, TURKEY), commaScope);
-check("case-insensitive removal", removePathFromScope(widened, TURKEY.toUpperCase()), commaScope);
-check("removing something absent is a no-op", removePathFromScope(commaScope, "nope.md"), commaScope);
+check("the others survive verbatim", removePathFromScope(widened, TURKEY), lineScope);
+check("case-insensitive removal", removePathFromScope(widened, TURKEY.toUpperCase()), lineScope);
+check("removing something absent is a no-op", removePathFromScope(lineScope, "nope.md"), lineScope);
 check("lines stay lines", removePathFromScope(`${TRACKER}\n${INBOX}\n${TURKEY}`, TURKEY), `${TRACKER}\n${INBOX}`);
 // Emptying the scope must fall back to the default file, never the whole vault.
 check("emptied scope falls back rather than opening up", parseScope(removePathFromScope(TURKEY, TURKEY)).usedFallback, true);
 
 console.log("\n[scopeIncludesPath — exact entries only, not folder coverage]");
-check("named file", scopeIncludesPath(commaScope, INBOX), true);
+check("named file", scopeIncludesPath(lineScope, INBOX), true);
 check("a file inside a named folder is in scope but not an entry", scopeIncludesPath("4. Projects", TURKEY), false);
 check("blank scope includes nothing", scopeIncludesPath("", TRACKER), false);
+
+// ======================================================================
+// 0.15.0 — a comma is part of a filename, not a separator.
+//
+// John's daily note is `2. Day Planners/26-11-24, Tuesday.md`. Under the old
+// `/[,\n]/` split it became `2. Day Planners/26-11-24` (a folder that doesn't
+// exist) plus `Tuesday.md` (a root file that doesn't exist), so the note was
+// never in scope: tasks typed into it parsed perfectly and were then dropped.
+// `scopeIncludesPath` split the same way, so the "already tracked?" guard
+// always said no and auto-track appended the path again on every capture —
+// which is why the shipped data.json had it four times over.
+// ======================================================================
+
+const { splitLegacyCommaList } = mod.scope;
+const DAILY = "2. Day Planners/26-11-24, Tuesday.md";
+
+console.log("\n[comma filenames survive — the invisible-task bug]");
+check("comma path is one entry", parseScope(DAILY).entries.length, 1);
+check("path intact", parseScope(DAILY).entries[0].path, DAILY);
+check("read as a file, not a folder", parseScope(DAILY).entries[0].kind, "file");
+check("the note is in scope", isInScope(DAILY, parseScope(DAILY)), true);
+check(
+  "tasks in it survive the scope filter",
+  filterTasksToScope(
+    parseTasksFromContent("- [ ] DEF this is another task [due:: 2026-11-26]", DAILY),
+    parseScope(DAILY)
+  ).length,
+  1
+);
+check("already-tracked check now answers yes", scopeIncludesPath(DAILY, DAILY), true);
+check("so auto-track stops appending duplicates", addPathToScope(DAILY, DAILY), DAILY);
+check("and it's still removable whole", removePathFromScope(`${TRACKER}\n${DAILY}`, DAILY), TRACKER);
+
+console.log("\n[splitLegacyCommaList — migrate old settings by asking the vault]");
+// The vault knows the daily note is real and that `26-11-24` is not.
+const vaultHas = (p) => p === DAILY || p === TRACKER || p === INBOX;
+check("nothing to do when there's no comma", splitLegacyCommaList(lineScope, vaultHas), null);
+check("undefined handled", splitLegacyCommaList(undefined, vaultHas), null);
+check(
+  "a real comma filename is rejoined",
+  splitLegacyCommaList(`${TRACKER}, ${DAILY}`, vaultHas),
+  `${TRACKER}\n${DAILY}`
+);
+check(
+  "a genuine two-item list still splits",
+  splitLegacyCommaList(`${TRACKER}, ${INBOX}`, vaultHas),
+  `${TRACKER}\n${INBOX}`
+);
+check(
+  "John's actual setting: 4 duplicates of a comma path collapse to one",
+  splitLegacyCommaList([DAILY, DAILY, DAILY, DAILY].join(", "), vaultHas),
+  DAILY
+);
+check(
+  "a path the vault doesn't have yet is left as typed",
+  splitLegacyCommaList("Projects/Not yet.md, Tasks.md", vaultHas),
+  "Projects/Not yet.md\nTasks.md"
+);
+check(
+  "token patterns pass through untouched",
+  splitLegacyCommaList("Week {{week}} of {{year}}.md, Tasks.md", vaultHas),
+  "Week {{week}} of {{year}}.md\nTasks.md"
+);
+// Migrating then parsing is the whole point: the tasks become visible.
+check(
+  "end to end — migrate, then the note is in scope",
+  isInScope(DAILY, parseScope(splitLegacyCommaList(`${TRACKER}, ${DAILY}`, vaultHas))),
+  true
+);
 
 console.log("\n[tracked project note — tasks parse and stay addressable]");
 const turkeyTasks = parseTasksFromContent(
@@ -764,7 +832,7 @@ check("already-ticked stays ticked", turkeyTasks[1].status, "done");
 check("unsized, so budget-filtered to Any", turkeyTasks[0].effort, null);
 check("file path recorded for the source chip", turkeyTasks[0].filePath, TURKEY);
 check("in scope once tracked", mod.scope.isInScope(TURKEY, parseScope(widened)), true);
-check("out of scope once untracked", mod.scope.isInScope(TURKEY, parseScope(commaScope)), false);
+check("out of scope once untracked", mod.scope.isInScope(TURKEY, parseScope(lineScope)), false);
 
 // ======================================================================
 // 0.9.2 — why a tracked project note looked empty, and how prose reads.
@@ -787,6 +855,37 @@ const turkeyOpen = turkeyTasks.filter((t) => t.status === "open");
 check("none of the tracked note's open tasks are dated", turkeyOpen.filter((t) => t.due).length, 0);
 check("so Today shows none of them", turkeyOpen.filter((t) => matchesHorizon(t, "today")).length, 0);
 check("and All shows all of them", turkeyOpen.filter((t) => matchesHorizon(t, "all")).length, turkeyOpen.length);
+
+// ======================================================================
+// 0.15.0 — a defer date more than a week out parks the task.
+//
+// John deferred "Logan ATP" to 2027-01-13 and it kept sitting in the main
+// list: "if something is more than a week out, let's just not make it visible
+// in the main view." It's still one menu item away under Deferred.
+// ======================================================================
+
+const { isParked, DEFER_HORIZON_DAYS } = mod.filters;
+const deferred = (days) =>
+  parseTasksFromContent(`- [ ] Logan ATP [defer:: ${inDays(days)}]`, TURKEY)[0];
+
+console.log("\n[defer horizon — parked past a week, visible under Deferred]");
+check("the horizon is a week", DEFER_HORIZON_DAYS, 7);
+check("undeferred is never parked", isParked(undatedOpen, REAL_TODAY), false);
+check("deferred 3 days is not parked", isParked(deferred(3), REAL_TODAY), false);
+check("deferred exactly 7 days is not parked", isParked(deferred(7), REAL_TODAY), false);
+check("deferred 8 days is parked", isParked(deferred(8), REAL_TODAY), true);
+check("deferred to January is parked", isParked(deferred(50), REAL_TODAY), true);
+
+check("a parked task is out of All — what John asked for", matchesHorizon(deferred(50), "all", REAL_TODAY), false);
+check("and out of Today", matchesHorizon(deferred(50), "today", REAL_TODAY), false);
+check("and out of This week", matchesHorizon(deferred(50), "week", REAL_TODAY), false);
+check("but visible under Deferred", matchesHorizon(deferred(50), "deferred", REAL_TODAY), true);
+// The near-term defer must not vanish: "push to Thursday" can't mean "lose it".
+check("a 3-day defer is still in All", matchesHorizon(deferred(3), "all", REAL_TODAY), true);
+check("a 3-day defer is still in This week", matchesHorizon(deferred(3), "week", REAL_TODAY), false);
+check("Deferred lists near-term defers too, so nothing is unreachable", matchesHorizon(deferred(3), "deferred", REAL_TODAY), true);
+check("Deferred is open tasks only", matchesHorizon(parseTasksFromContent("- [x] done ✅ 2026-11-01", TURKEY)[0], "deferred", REAL_TODAY), false);
+check("an undeferred task isn't in Deferred", matchesHorizon(undatedOpen, "deferred", REAL_TODAY), false);
 
 console.log("\n[displayTitle — prose notes render as prose, on screen only]");
 check("bold unwrapped, not deleted", displayTitle("**Propane — full 20 lb tank** (fill now)"), "Propane — full 20 lb tank (fill now)");
@@ -1050,24 +1149,24 @@ console.log("\n[tracked notes fold under their own heading]");
   check("the year follows the week, not the date", weekYear(new Date(2027, 0, 1), "monday"), 2026);
   check("Sunday-start just uses the calendar year", weekYear(new Date(2027, 0, 1), "sunday"), 2027);
 
-  const scope = parseScope(`Tasks.md, ${PATTERN}`, { today: NOV22, weekStart: "sunday" });
+  const scope = parseScope(`Tasks.md\n${PATTERN}`, { today: NOV22, weekStart: "sunday" });
   check("the expanded path is what gets scanned", scope.entries[1].path, "2. Day Planners/Weeks/Week 48 of 2026.md");
   check("capture still targets the first file", mod.scope.primaryManagedFile(scope), "Tasks.md");
   check(
     "an unexpanded token is dropped, not scanned literally",
-    parseScope("Tasks.md, Week {{quarter}}.md", { today: NOV22 }).entries.length,
+    parseScope("Tasks.md\nWeek {{quarter}}.md", { today: NOV22 }).entries.length,
     1
   );
   check(
     "tokens off means the brace entry is skipped too",
-    parseScope(`Tasks.md, ${PATTERN}`, { today: NOV22, expandTokens: false }).entries.length,
+    parseScope(`Tasks.md\n${PATTERN}`, { today: NOV22, expandTokens: false }).entries.length,
     1
   );
 
   // Right-click on the live week page has to resolve to the pattern, or the
   // toggle appends a second frozen copy of today's path and "stop tracking"
   // appears to do nothing.
-  const raw = `Tasks.md, ${PATTERN}`;
+  const raw = `Tasks.md\n${PATTERN}`;
   const live = "2. Day Planners/Weeks/Week 48 of 2026.md";
   check("the live page counts as already tracked", scopeIncludesPath(raw, live, { today: NOV22 }), true);
   check(

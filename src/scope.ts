@@ -110,22 +110,41 @@ export function samePath(a: string | null | undefined, b: string | null | undefi
 }
 
 /**
+ * Split the raw `managedFiles` setting into one entry per line.
+ *
+ * **One path per line, and a comma is not a separator.** It was, until a
+ * daily note named `2. Day Planners/26-11-24, Tuesday.md` split into
+ * `2. Day Planners/26-11-24` (no `.md`, so read as a folder that doesn't
+ * exist) and `Tuesday.md` (a vault-root file that doesn't exist). The note
+ * was never in scope, so tasks written into it parsed correctly and were then
+ * silently dropped — and since `scopeIncludesPath` split the same way, the
+ * "already tracked?" check always answered no and kept appending the path
+ * again on every capture.
+ *
+ * A comma is a legal filename character and a date format people actually
+ * use, so no amount of cleverness makes it a safe delimiter. A newline is not
+ * legal in a filename, which is the whole argument. Legacy comma lists are
+ * rewritten once on load by `splitLegacyCommaList`, which can ask the vault
+ * which reading is real.
+ */
+function splitScopeEntries(raw: string | undefined | null): string[] {
+  return (raw ?? "").split(/\n/).map(normalizePath).filter((p) => p.length > 0);
+}
+
+/**
  * Parse the `managedFiles` setting into scope entries.
  *
- * Accepts comma- or newline-separated entries so a longer list can be pasted
- * as lines. An entry ending in `.md` is an exact file; everything else is
- * treated as a folder and matched recursively. A blank setting falls back to
- * the default file rather than the whole vault — opening up to 3,000 stray
- * checkboxes should never be the accidental state.
+ * One entry per line. An entry ending in `.md` is an exact file; everything
+ * else is treated as a folder and matched recursively. A blank setting falls
+ * back to the default file rather than the whole vault — opening up to 3,000
+ * stray checkboxes should never be the accidental state.
  */
 export function parseScope(
   raw: string | undefined | null,
   options: { today?: Date; weekStart?: "sunday" | "monday"; expandTokens?: boolean } = {}
 ): ManagedScope {
   const { today = new Date(), weekStart = "sunday", expandTokens = true } = options;
-  const parts = (raw ?? "")
-    .split(/[,\n]/)
-    .map(normalizePath)
+  const parts = splitScopeEntries(raw)
     .map((p) => (expandTokens ? expandPathTokens(p, today, weekStart) : p))
     // A leftover `{{…}}` means the user typed a token we don't expand. Drop
     // the entry rather than scanning for a literal file with braces in its name.
@@ -201,12 +220,12 @@ export function primaryManagedFile(scope: ManagedScope): string {
 // happen — so these back a command and a right-click entry on the note.
 //
 // They work on the raw setting string rather than the parsed scope so the
-// user's own formatting (commas vs lines, their ordering) survives a toggle,
-// and so the *first* entry — which is the capture target — never moves.
+// user's own ordering survives a toggle, and so the *first* entry — which is
+// the capture target — never moves.
 
-/** Split the raw setting the way parseScope does, but keep the separator. */
+/** Split the raw setting the way parseScope does. */
 function rawEntries(raw: string | undefined | null): string[] {
-  return (raw ?? "").split(/[,\n]/).map(normalizePath).filter((p) => p.length > 0);
+  return splitScopeEntries(raw);
 }
 
 /**
@@ -241,9 +260,7 @@ export function addPathToScope(raw: string | undefined | null, path: string): st
   if (!clean || scopeIncludesPath(raw, clean)) return raw ?? "";
   const existing = (raw ?? "").trim();
   if (!existing) return clean;
-  // Match whatever separator is already in use so a line-per-entry list stays
-  // a line-per-entry list.
-  return existing.includes("\n") ? `${existing}\n${clean}` : `${existing}, ${clean}`;
+  return `${existing}\n${clean}`;
 }
 
 /**
@@ -265,7 +282,74 @@ export function removePathFromScope(
       p.toLowerCase() !== needle &&
       expandPathTokens(p, today, weekStart).toLowerCase() !== needle
   );
-  return (raw ?? "").includes("\n") ? kept.join("\n") : kept.join(", ");
+  return kept.join("\n");
+}
+
+// --- One-time migration off comma-separated lists ------------------------
+
+/**
+ * Rewrite a legacy comma-separated `managedFiles` value as one path per line.
+ *
+ * The hard case is the one that caused the bug: `2. Day Planners/26-11-24,
+ * Tuesday.md` is a single real file whose name contains a comma, and
+ * `Tasks.md, Projects/Launch.md` is two. Nothing about the text distinguishes
+ * them — so we ask the vault. `exists` is a path → boolean probe (in the
+ * plugin, `app.vault.getAbstractFileByPath`); we walk the comma-separated
+ * tokens and greedily rejoin the longest run that names something real.
+ *
+ * When no run resolves we fall back to the single token, which is the old
+ * behaviour: a path that doesn't exist yet (a week page for a week that hasn't
+ * started, a `{{week}}` pattern, a folder about to be created) stays as typed
+ * rather than being silently merged into its neighbour.
+ *
+ * Returns `null` when there is nothing to do, so the caller can skip the
+ * settings write entirely on the overwhelmingly common already-migrated path.
+ */
+export function splitLegacyCommaList(
+  raw: string | undefined | null,
+  exists: (path: string) => boolean
+): string | null {
+  const value = raw ?? "";
+  if (!value.includes(",")) return null;
+
+  const out: string[] = [];
+  for (const line of value.split(/\n/)) {
+    const tokens = line.split(",");
+    let i = 0;
+    while (i < tokens.length) {
+      // Longest run first: prefer the real `26-11-24, Tuesday.md` over the
+      // `26-11-24` prefix that happens to parse.
+      let taken = 0;
+      for (let end = tokens.length; end > i + 1; end--) {
+        const candidate = normalizePath(tokens.slice(i, end).join(","));
+        if (candidate && exists(candidate)) {
+          out.push(candidate);
+          taken = end - i;
+          break;
+        }
+      }
+      if (taken === 0) {
+        // Nothing longer resolved — keep the single token as typed.
+        const single = normalizePath(tokens[i]);
+        if (single) out.push(single);
+        taken = 1;
+      }
+      i += taken;
+    }
+  }
+
+  // Dedupe: the broken `scopeIncludesPath` let the auto-track path append the
+  // same note on every capture, so real-world settings have it 4× over.
+  const seen = new Set<string>();
+  const deduped = out.filter((p) => {
+    const key = p.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const migrated = deduped.join("\n");
+  return migrated === value ? null : migrated;
 }
 
 /** Human-readable scope summary for the settings tab and the empty state. */

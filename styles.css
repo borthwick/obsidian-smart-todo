@@ -33,8 +33,16 @@
   --stw-accent: hsl(214, 72%, 42%);
   --stw-accent-strong: hsl(214, 78%, 32%);
 
+  /* Inter at a fixed 14px, not the theme's UI font. The panel is a dense list
+     of short lines next to the editor, and inheriting whatever serif or
+     display face the vault theme is using makes the two compete. Inter is
+     bundled with Obsidian, so there's no webfont to load; the stack after it
+     is the fallback chain for anyone whose install doesn't have it. */
+  font-family: Inter, var(--font-interface), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+
   padding: 0 var(--size-4-2) var(--size-4-4);
-  font-size: var(--font-ui-small);
 }
 
 /* ======================================================================
@@ -177,6 +185,33 @@
   outline: none;
 }
 
+/* Clear button. Hidden rather than absent when the box is empty, so the input
+   never changes width as you type the first character. */
+.stw-search-clear {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  color: var(--text-faint);
+  background: var(--background-modifier-border);
+  cursor: pointer;
+}
+.stw-search-clear.is-visible {
+  display: inline-flex;
+}
+.stw-search-clear:hover {
+  color: var(--text-on-accent);
+  background: var(--text-muted);
+}
+.stw-search-clear .svg-icon {
+  width: 10px;
+  height: 10px;
+  stroke-width: 3;
+}
+
 /* The keyboard hint is also the button — the mockup showed the shortcut, and
    a visible shortcut that isn't clickable is a small lie on a trackpad. */
 .stw-kbd {
@@ -232,12 +267,16 @@
 
 .stw-moderow {
   flex-wrap: nowrap;
+  gap: var(--size-2-2);
 }
 .stw-modes {
   display: inline-flex;
   align-items: center;
-  gap: 0;
-  padding: 2px;
+  /* Real space between segments, not just padding inside them: the active
+     capsule has to float clear of its neighbours or the whole strip reads as
+     one wide button with a lighter patch in it. */
+  gap: 3px;
+  padding: 3px;
   border-radius: 999px;
   background: var(--background-modifier-hover);
   flex: 0 0 auto;
@@ -246,10 +285,12 @@
 .stw-mode {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
   justify-content: center;
-  padding: 3px var(--size-2-3);
+  /* Taller than it was. The old 3px made a 20px-high target that was fiddly
+     to hit, and iOS segments are deliberately generous vertically. */
+  padding: 5px var(--size-2-3);
   border: none;
   border-radius: 999px;
   background: transparent;
@@ -258,14 +299,26 @@
   font-size: var(--font-ui-smaller);
   line-height: 1;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
-.stw-mode:hover {
+.stw-mode:hover:not(.is-active) {
   color: var(--text-normal);
+  background: var(--background-modifier-border);
 }
 .stw-mode.is-active {
   background: var(--background-primary);
   color: var(--stw-accent);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  /* A hairline plus a 1px lift, which is what the iOS capsule actually is up
+     close. The old 2px blur read as a drop shadow on a button. */
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 1px 1px rgba(0, 0, 0, 0.06);
+}
+
+/* Hairline separating the toggles from the When menu. */
+.stw-row-divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 18px;
+  background: var(--background-modifier-border);
 }
 .stw-mode-icon {
   display: inline-flex;

@@ -89,9 +89,10 @@ export class SmartTodoSettingTab extends PluginSettingTab {
     new Setting(el)
       .setName("Managed files")
       .setDesc(
-        "Comma-separated. An entry ending in .md is a single file; anything " +
+        "One path per line — commas are part of a filename, not separators. " +
+          "An entry ending in .md is a single file; anything " +
           "else is treated as a folder and all .md files under it are included. " +
-          `Example: "${DEFAULT_MANAGED_FILE}, Projects/Tasks". ` +
+          `Example: "${DEFAULT_MANAGED_FILE}" then "Projects/Tasks". ` +
           // Nobody should have to hand-type a path with an emoji in it.
           "To add a project note, right-click it and choose " +
           '"Smart ToDo: track tasks in this note" instead of typing it here.'
@@ -167,8 +168,10 @@ export class SmartTodoSettingTab extends PluginSettingTab {
         .setName("Add the inbox to managed files")
         .addButton((btn) =>
           btn.setButtonText("Add to scope").onClick(async () => {
-            const current = this.plugin.settings.managedFiles.trim();
-            this.plugin.settings.managedFiles = current ? `${current}, ${path}` : path;
+            this.plugin.settings.managedFiles = addPathToScope(
+              this.plugin.settings.managedFiles,
+              path
+            );
             await this.plugin.saveSettings();
             this.plugin.refreshViews();
             this.display();

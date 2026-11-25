@@ -152,12 +152,17 @@ export const MODES: ModeDef[] = [
 ];
 
 /** The "when" axis, collapsed from seven tabs into one menu. */
-export type Horizon = "today" | "week" | "all" | "done";
+export type Horizon = "today" | "week" | "all" | "deferred" | "done";
 
 export const HORIZONS: Array<{ id: Horizon; label: string }> = [
   { id: "today", label: "Today" },
   { id: "week", label: "This week" },
   { id: "all", label: "All" },
+  // "All" means all the work in play, not every line in the vault: a task
+  // deferred past DEFER_HORIZON_DAYS is parked, and parked work in the main
+  // list is noise you have to re-skip every time you look. Deferred is where
+  // it goes, and it's one menu item away rather than a setting.
+  { id: "deferred", label: "Deferred" },
   { id: "done", label: "Done" },
 ];
 
