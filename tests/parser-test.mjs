@@ -675,6 +675,43 @@ const keptFenced = buildKeptContent(fenced, "- [ ] x");
 check("heading goes above a fence, never inside it", keptFenced.indexOf("## Kept") < keptFenced.indexOf("```"), true);
 check("fence intact", /```tasks\nnot done\n```/.test(keptFenced), true);
 
+console.log("\n[editing a capture is keeping it — one write, edited line]");
+// John's report: he edited an Inbox capture, hit Save, and it stayed in the
+// Inbox waiting for a separate Keep. Save now files it — and what lands in the
+// tracker has to be the *edited* line, while the *original* text is still what
+// finds the line to remove from the inbox.
+const INBOX_CAPTURE = "- [ ] people graph review [stream:: 9a1f]";
+const inboxCapture = parseTasksFromContent(INBOX_CAPTURE, "Task inbox.md")[0];
+const savedLine = buildPatchedLine(inboxCapture, {
+  project: "betaworks",
+  effort: "15m",
+  important: false,
+  defer: new Date(2026, 11, 4),
+});
+check("the edit is on the line that moves", /\[project:: betaworks\]/.test(savedLine), true);
+check("effort came along", /\[effort:: 15m\]/.test(savedLine), true);
+check("so did the defer date", /\[defer:: 2026-12-04\]/.test(savedLine), true);
+check(
+  "the stream id survives, or the bridge re-adds it",
+  /\[stream:: 9a1f\]/.test(savedLine),
+  true
+);
+const keptEdited = buildKeptContent("# Tasks\n", savedLine);
+check("and it lands in the tracker as edited", keptEdited.includes(savedLine), true);
+check("what landed is not the pre-edit line", savedLine === INBOX_CAPTURE, false);
+check(
+  "removal still locates the line by what's on disk",
+  locateTaskLine(["# inbox", INBOX_CAPTURE], inboxCapture),
+  1
+);
+// Opening a capture and saving it unchanged is still a decision to keep it,
+// so the no-op patch has to produce a usable line rather than nothing.
+check(
+  "an unchanged save still yields the line",
+  buildPatchedLine(inboxCapture, {}),
+  INBOX_CAPTURE
+);
+
 console.log("\n[locateTaskLine — refuses to guess]");
 const one = parseTasksFromContent("- [ ] alpha\n- [ ] beta", "Tasks.md")[1];
 check("finds the line by content", locateTaskLine(["- [ ] alpha", "- [ ] beta"], one), 1);

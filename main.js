@@ -1480,14 +1480,14 @@ async function appendTask(app, path, title) {
     (content) => buildInsertedContent(content, `- [ ] ${trimmed}`)
   );
 }
-async function moveTaskLine(app, task, targetPath) {
+async function moveTaskLine(app, task, targetPath, lineText = task.rawText) {
   if (samePath(task.filePath, targetPath))
     return;
   const source = getFile(app, task.filePath);
   const content = await app.vault.read(source);
   locateTaskLine(content.split("\n"), task);
   const target = await ensureManagedFile(app, targetPath);
-  await processFile(app, target, (c) => buildKeptContent(c, task.rawText));
+  await processFile(app, target, (c) => buildKeptContent(c, lineText));
   try {
     await processFile(app, source, (c) => {
       const lines = c.split("\n");
@@ -2051,11 +2051,12 @@ function dateInputValue(date) {
   return date ? formatDate(date) : "";
 }
 var EditTaskModal = class extends import_obsidian5.Modal {
-  constructor(app, task, onSubmit, onReveal) {
+  constructor(app, task, onSubmit, onReveal, keepTarget = null) {
     super(app);
     this.task = task;
     this.onSubmit = onSubmit;
     this.onReveal = onReveal;
+    this.keepTarget = keepTarget;
     this.draft = {
       title: task.title,
       due: task.due,
@@ -2242,7 +2243,12 @@ var EditTaskModal = class extends import_obsidian5.Modal {
     spacer.setText("");
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close());
-    const save = actions.createEl("button", { cls: "mod-cta", text: "Save" });
+    const save = actions.createEl("button", {
+      cls: "mod-cta",
+      text: this.keepTarget ? "Save & keep" : "Save"
+    });
+    if (this.keepTarget)
+      save.setAttr("aria-label", `Save and move into ${this.keepTarget}`);
     save.addEventListener("click", () => void this.submit());
     titleInput.focus();
     titleInput.select();
@@ -3336,7 +3342,7 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
       await this.refresh();
     });
     const edit = actions.createEl("button", { cls: "stw-inbox-btn", text: "Edit" });
-    edit.setAttr("aria-label", "Fix the wording, size or date before deciding");
+    edit.setAttr("aria-label", `Fix the wording, size or date \u2014 saving keeps it in ${target}`);
     edit.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.openEditor(task);
@@ -4032,17 +4038,38 @@ var SmartTodoView = class extends import_obsidian9.ItemView {
     );
     menu.showAtMouseEvent(evt);
   }
+  /**
+   * Open the editor — and, for an untriaged capture, make Save decide.
+   *
+   * Triage has three answers and editing isn't a fourth one. Nobody fixes the
+   * wording, sets a size and picks a category on something they then intend to
+   * leave sitting in the Inbox; the work of deciding is already done by the
+   * time you hit Save. So a saved capture is a kept capture, in one write —
+   * the patched line goes straight to the tracker rather than being written
+   * back to the inbox and moved a second time. Drop is still the way to say no.
+   */
   openEditor(task) {
+    const target = this.plugin.primaryFile;
+    const keeps = this.plugin.isInboxTask(task) && !samePath(task.filePath, target);
     new EditTaskModal(
       this.app,
       task,
       async (patch) => {
+        if (keeps) {
+          const line = buildPatchedLine(task, patch);
+          const ok = await safeWrite(() => moveTaskLine(this.app, task, target, line));
+          if (ok)
+            new import_obsidian9.Notice(`Smart ToDo: kept \u2192 ${target}`, 3e3);
+          await this.refresh();
+          return;
+        }
         if (Object.keys(patch).length === 0)
           return;
         await safeWrite(() => applyTaskPatch(this.app, task, patch));
         await this.refresh();
       },
-      () => void this.revealTask(task)
+      () => void this.revealTask(task),
+      keeps ? target : null
     ).open();
   }
   async revealTask(task) {

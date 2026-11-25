@@ -72,6 +72,7 @@ import {
 import {
   TaskPatch,
   applyTaskPatch,
+  buildPatchedLine,
   dropTask,
   moveTaskLine,
   pushTargetDate,
@@ -804,7 +805,7 @@ export class SmartTodoView extends ItemView {
     });
 
     const edit = actions.createEl("button", { cls: "stw-inbox-btn", text: "Edit" });
-    edit.setAttr("aria-label", "Fix the wording, size or date before deciding");
+    edit.setAttr("aria-label", `Fix the wording, size or date — saving keeps it in ${target}`);
     edit.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.openEditor(task);
@@ -1644,16 +1645,39 @@ export class SmartTodoView extends ItemView {
     menu.showAtMouseEvent(evt);
   }
 
+  /**
+   * Open the editor — and, for an untriaged capture, make Save decide.
+   *
+   * Triage has three answers and editing isn't a fourth one. Nobody fixes the
+   * wording, sets a size and picks a category on something they then intend to
+   * leave sitting in the Inbox; the work of deciding is already done by the
+   * time you hit Save. So a saved capture is a kept capture, in one write —
+   * the patched line goes straight to the tracker rather than being written
+   * back to the inbox and moved a second time. Drop is still the way to say no.
+   */
   private openEditor(task: SmartTask): void {
+    const target = this.plugin.primaryFile;
+    const keeps = this.plugin.isInboxTask(task) && !samePath(task.filePath, target);
+
     new EditTaskModal(
       this.app,
       task,
       async (patch: TaskPatch) => {
+        if (keeps) {
+          // Note the empty patch isn't an early exit here: opening a capture
+          // and saving it unchanged is still a decision to keep it.
+          const line = buildPatchedLine(task, patch);
+          const ok = await safeWrite(() => moveTaskLine(this.app, task, target, line));
+          if (ok) new Notice(`Smart ToDo: kept → ${target}`, 3000);
+          await this.refresh();
+          return;
+        }
         if (Object.keys(patch).length === 0) return;
         await safeWrite(() => applyTaskPatch(this.app, task, patch));
         await this.refresh();
       },
-      () => void this.revealTask(task)
+      () => void this.revealTask(task),
+      keeps ? target : null
     ).open();
   }
 

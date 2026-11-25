@@ -41,7 +41,16 @@ export class EditTaskModal extends Modal {
     app: App,
     private task: SmartTask,
     private onSubmit: (patch: TaskPatch) => void | Promise<void>,
-    private onReveal: () => void
+    private onReveal: () => void,
+    /**
+     * Where Save will file this, when the task is an untriaged capture.
+     *
+     * Editing a capture *is* deciding about it — you don't straighten the
+     * wording and size of something you're about to drop. So Save keeps it,
+     * and the button says so rather than moving the row out from under you.
+     * Null for an ordinary task: Save just saves.
+     */
+    private keepTarget: string | null = null
   ) {
     super(app);
     this.draft = {
@@ -257,7 +266,11 @@ export class EditTaskModal extends Modal {
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close());
 
-    const save = actions.createEl("button", { cls: "mod-cta", text: "Save" });
+    const save = actions.createEl("button", {
+      cls: "mod-cta",
+      text: this.keepTarget ? "Save & keep" : "Save",
+    });
+    if (this.keepTarget) save.setAttr("aria-label", `Save and move into ${this.keepTarget}`);
     save.addEventListener("click", () => void this.submit());
 
     titleInput.focus();

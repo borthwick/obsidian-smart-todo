@@ -589,11 +589,19 @@ export async function appendTask(
  * The whole line moves verbatim, inline fields included. That matters beyond
  * tidiness: `[stream:: <uuid>]` is the ingest bridge's dedupe key, and it
  * searches both files, so a kept task stays ingested forever.
+ *
+ * `lineText` overrides what gets written at the destination, for the one case
+ * where editing and keeping are the same gesture: Save in the editor on an
+ * inbox capture. Patching in place and *then* moving would write the inbox
+ * file twice and leave the second write holding a stale `rawText`, so the
+ * edited line is handed straight to the move instead. The source line is still
+ * located by the original text — that's what's actually on disk.
  */
 export async function moveTaskLine(
   app: App,
   task: SmartTask,
-  targetPath: string
+  targetPath: string,
+  lineText: string = task.rawText
 ): Promise<void> {
   if (samePath(task.filePath, targetPath)) return; // already where it's going
 
@@ -602,7 +610,7 @@ export async function moveTaskLine(
   locateTaskLine(content.split("\n"), task); // throws before anything is written
 
   const target = await ensureManagedFile(app, targetPath);
-  await processFile(app, target, (c) => buildKeptContent(c, task.rawText));
+  await processFile(app, target, (c) => buildKeptContent(c, lineText));
 
   try {
     await processFile(app, source, (c) => {
