@@ -1514,10 +1514,32 @@
    Settings tab
    ====================================================================== */
 
+/* A setting whose value is text you have to read back — a vault path, a list
+   of headings — rather than a toggle you only ever flip. Obsidian's default
+   row puts the control in a narrow right-hand column, where "3. Evergreen &
+   fleeting Notes/Task tracker.md" wraps to a four-character ribbon. Stacking
+   the control under the description is the whole fix. */
+.smart-todo-wide-setting {
+  display: block;
+}
+.smart-todo-wide-setting .setting-item-info {
+  margin-right: 0;
+}
+.smart-todo-wide-setting .setting-item-control {
+  width: 100%;
+  margin-top: var(--size-4-2);
+  padding-left: 0;
+  justify-content: flex-start;
+}
+.smart-todo-wide-setting .setting-item-control > * {
+  width: 100%;
+}
+
 .smart-todo-scope-input {
   width: 100%;
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
+  line-height: 1.6;
   resize: vertical;
 }
 .smart-todo-scope-summary {

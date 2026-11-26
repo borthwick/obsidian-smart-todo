@@ -1836,7 +1836,7 @@ var SmartTodoSettingTab = class extends import_obsidian5.PluginSettingTab {
         text: `Currently matching ${matches.length} file${matches.length === 1 ? "" : "s"} in the vault. New tasks go to ${primaryManagedFile(scope)}.`
       });
     };
-    new import_obsidian5.Setting(el).setName("Managed files").setDesc(
+    new import_obsidian5.Setting(el).setName("Managed files").setClass("smart-todo-wide-setting").setDesc(
       `One path per line \u2014 commas are part of a filename, not separators. An entry ending in .md is a single file; anything else is treated as a folder and all .md files under it are included. Example: "${DEFAULT_MANAGED_FILE}" then "Projects/Tasks". Add #Heading to a .md path to track only that section \u2014 "Meetings/board.md#Important" ignores the rest of the note. To add a project note, right-click it and choose "Smart ToDo: track tasks in this note" instead of typing it here.`
     ).addTextArea((text) => {
       text.setPlaceholder(DEFAULT_MANAGED_FILE).setValue(this.plugin.settings.managedFiles).onChange(async (value) => {
@@ -1845,7 +1845,7 @@ var SmartTodoSettingTab = class extends import_obsidian5.PluginSettingTab {
         renderSummary();
         this.plugin.refreshViews();
       });
-      text.inputEl.rows = 3;
+      text.inputEl.rows = 8;
       text.inputEl.addClass("smart-todo-scope-input");
     });
     el.appendChild(summary);
@@ -1858,7 +1858,7 @@ var SmartTodoSettingTab = class extends import_obsidian5.PluginSettingTab {
         renderSummary();
       })
     );
-    new import_obsidian5.Setting(el).setName("Inbox file").setDesc(
+    new import_obsidian5.Setting(el).setName("Inbox file").setClass("smart-todo-wide-setting").setDesc(
       `Optional. Open tasks in this file are treated as untriaged captures: they show in an Inbox bucket at the top of the panel and nowhere else. Keep moves one into ${primaryManagedFile(this.plugin.scope)}. Leave blank to turn the Inbox off.`
     ).addText((text) => {
       text.setPlaceholder("Task inbox.md").setValue(this.plugin.settings.inboxFile).onChange(async (value) => {
@@ -1947,7 +1947,7 @@ var SmartTodoSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.display();
       })
     );
-    new import_obsidian5.Setting(el).setName("Headings that mean important").setDesc(
+    new import_obsidian5.Setting(el).setName("Headings that mean important").setClass("smart-todo-wide-setting").setDesc(
       'Comma-separated. A task under a heading containing any of these counts as important unless the task says otherwise itself \u2014 the judgment on "Focus this week, what is Important and Urgent" was made once for the whole list rather than once per line. The panel marks inferred importance with \xA7 so you can see where it came from.'
     ).addTextArea((text) => {
       var _a3;

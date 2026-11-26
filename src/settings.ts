@@ -90,6 +90,12 @@ export class SmartTodoSettingTab extends PluginSettingTab {
 
     new Setting(el)
       .setName("Managed files")
+      // Obsidian puts the control in a narrow right-hand column, which is fine
+      // for a toggle and useless for a vault path: "3. Evergreen & fleeting
+      // Notes/…" wraps to four unreadable characters a line. These three
+      // settings hold text you have to be able to *read back*, so they get the
+      // full width under the description instead.
+      .setClass("smart-todo-wide-setting")
       .setDesc(
         "One path per line — commas are part of a filename, not separators. " +
           "An entry ending in .md is a single file; anything " +
@@ -111,7 +117,7 @@ export class SmartTodoSettingTab extends PluginSettingTab {
             renderSummary();
             this.plugin.refreshViews();
           });
-        text.inputEl.rows = 3;
+        text.inputEl.rows = 8;
         text.inputEl.addClass("smart-todo-scope-input");
       });
 
@@ -136,6 +142,7 @@ export class SmartTodoSettingTab extends PluginSettingTab {
     // visible and gets a decision, instead of silently joining forty others.
     new Setting(el)
       .setName("Inbox file")
+      .setClass("smart-todo-wide-setting")
       .setDesc(
         "Optional. Open tasks in this file are treated as untriaged captures: " +
           "they show in an Inbox bucket at the top of the panel and nowhere " +
@@ -276,6 +283,7 @@ export class SmartTodoSettingTab extends PluginSettingTab {
 
     new Setting(el)
       .setName("Headings that mean important")
+      .setClass("smart-todo-wide-setting")
       .setDesc(
         "Comma-separated. A task under a heading containing any of these counts " +
           "as important unless the task says otherwise itself — the judgment on " +
