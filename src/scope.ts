@@ -149,8 +149,10 @@ function splitScopeEntries(raw: string | undefined | null): string[] {
  * heading. The heading half is kept verbatim apart from trimming — it's
  * matched loosely later, so there's nothing to normalize here.
  */
+const HEADING_SUFFIX_RE = /^(.*\.md)#(.+)$/i;
+
 export function splitHeadingSuffix(entry: string): { path: string; heading: string | null } {
-  const m = /^(.*\.md)#(.+)$/i.exec(entry);
+  const m = HEADING_SUFFIX_RE.exec(entry);
   if (!m) return { path: entry, heading: null };
   const heading = m[2].trim();
   return heading ? { path: m[1], heading } : { path: m[1], heading: null };
@@ -402,6 +404,19 @@ export function splitLegacyCommaList(
 
   const out: string[] = [];
   for (const line of value.split(/\n/)) {
+    // A `.md#` suffix can only have been written by 0.16.0's heading picker,
+    // which has always written one entry per line — so this line is already
+    // migrated by construction and must be left alone. Without this it gets
+    // shredded: `kanban = betaworks IC, with todo's (running) ....md#NewCo,
+    // threshold` has a comma in the filename *and* a comma in the heading,
+    // and the `exists` probe below is given the whole string, heading and
+    // all, so no run ever resolves and every token becomes its own line.
+    // That is the original comma bug wearing a different hat.
+    if (HEADING_SUFFIX_RE.test(line)) {
+      const kept = normalizePath(line);
+      if (kept) out.push(kept);
+      continue;
+    }
     const tokens = line.split(",");
     let i = 0;
     while (i < tokens.length) {

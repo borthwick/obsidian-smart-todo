@@ -865,6 +865,42 @@ check(
   true
 );
 
+// The comma bug came back wearing a heading. John's Kanban has a comma in its
+// *filename* and a comma in the column heading he scoped to, and the `exists`
+// probe was handed the whole `path.md#Heading` string — which never resolves,
+// so no run matched and the single entry shredded into three dead lines.
+// A `.md#` suffix can only come from 0.16.0's picker, which writes one per
+// line, so the migration has no business touching it at all.
+const KANBAN = "4. Meetings/kanban = betaworks IC, with todo's (running) ....md";
+const KANBAN_SCOPED = `${KANBAN}#NewCo, threshold 🚀`;
+const vaultHasKanban = (p) => vaultHas(p) || p === KANBAN;
+console.log("\n[heading-scoped entries survive the comma migration]");
+check(
+  "a scoped entry with commas in both halves is left whole",
+  splitLegacyCommaList(`${TRACKER}\n${KANBAN_SCOPED}`, vaultHasKanban),
+  null
+);
+check(
+  "it still migrates the lines around it",
+  splitLegacyCommaList(`${TRACKER}, ${INBOX}\n${KANBAN_SCOPED}`, vaultHasKanban),
+  `${TRACKER}\n${INBOX}\n${KANBAN_SCOPED}`
+);
+check(
+  "the heading survives intact",
+  parseScope(KANBAN_SCOPED).entries[0].heading,
+  "NewCo, threshold 🚀"
+);
+check(
+  "and the path half is the real file",
+  parseScope(KANBAN_SCOPED).entries[0].path,
+  KANBAN
+);
+check(
+  "and the scoped note is still in scope",
+  isInScope(KANBAN, parseScope(KANBAN_SCOPED)),
+  true
+);
+
 console.log("\n[tracked project note — tasks parse and stay addressable]");
 const turkeyTasks = parseTasksFromContent(
   ["## 🛒 Shopping list", "- [ ] Propane", "- [x] Turkey ✅ 2026-11-21", "- [ ] Peanut oil"].join("\n"),

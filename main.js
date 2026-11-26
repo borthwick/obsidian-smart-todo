@@ -257,8 +257,9 @@ function samePath(a, b) {
 function splitScopeEntries(raw) {
   return (raw != null ? raw : "").split(/\n/).map(normalizePath).filter((p) => p.length > 0);
 }
+var HEADING_SUFFIX_RE = /^(.*\.md)#(.+)$/i;
 function splitHeadingSuffix(entry) {
-  const m = /^(.*\.md)#(.+)$/i.exec(entry);
+  const m = HEADING_SUFFIX_RE.exec(entry);
   if (!m)
     return { path: entry, heading: null };
   const heading = m[2].trim();
@@ -370,6 +371,12 @@ function splitLegacyCommaList(raw, exists) {
     return null;
   const out = [];
   for (const line of value.split(/\n/)) {
+    if (HEADING_SUFFIX_RE.test(line)) {
+      const kept = normalizePath(line);
+      if (kept)
+        out.push(kept);
+      continue;
+    }
     const tokens = line.split(",");
     let i = 0;
     while (i < tokens.length) {
